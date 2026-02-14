@@ -1,0 +1,249 @@
+@import "tailwindcss";
+
+@theme {
+  /* Cyberpunk color palette */
+  --color-void: #0a0a0f;
+  --color-abyss: #0d0d15;
+  --color-deep: #12121e;
+  --color-surface: #1a1a2e;
+  --color-surface-light: #242440;
+  --color-border: #2a2a4a;
+  --color-border-glow: #3a3a6a;
+
+  /* Neon accents */
+  --color-neon-cyan: #00f0ff;
+  --color-neon-magenta: #ff00aa;
+  --color-neon-green: #00ff88;
+  --color-neon-yellow: #ffaa00;
+  --color-neon-blue: #4466ff;
+  --color-neon-red: #ff3366;
+
+  /* Neon with opacity for glows */
+  --color-neon-cyan-dim: #00f0ff33;
+  --color-neon-magenta-dim: #ff00aa33;
+  --color-neon-green-dim: #00ff8833;
+
+  /* Text */
+  --color-text-primary: #e0e0f0;
+  --color-text-secondary: #8888aa;
+  --color-text-muted: #555577;
+
+  /* Fonts */
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Base styles */
+body {
+  background: var(--color-void);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-abyss);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-glow);
+}
+
+/* Glassmorphism card */
+.glass-card {
+  background: linear-gradient(
+    135deg,
+    rgba(26, 26, 46, 0.8),
+    rgba(18, 18, 30, 0.6)
+  );
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.glass-card:hover {
+  border-color: var(--color-border-glow);
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.05);
+}
+
+/* Neon indicator light */
+.indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.indicator-active {
+  background: var(--color-neon-green);
+  box-shadow: 0 0 8px var(--color-neon-green), 0 0 16px rgba(0, 255, 136, 0.3);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.indicator-warning {
+  background: var(--color-neon-yellow);
+  box-shadow: 0 0 8px var(--color-neon-yellow), 0 0 16px rgba(255, 170, 0, 0.3);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.indicator-error {
+  background: var(--color-neon-red);
+  box-shadow: 0 0 8px var(--color-neon-red), 0 0 16px rgba(255, 51, 102, 0.3);
+}
+
+.indicator-idle {
+  background: var(--color-text-muted);
+}
+
+.indicator-running {
+  background: var(--color-neon-cyan);
+  box-shadow: 0 0 8px var(--color-neon-cyan), 0 0 16px rgba(0, 240, 255, 0.3);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Neon text glow */
+.neon-text-cyan {
+  color: var(--color-neon-cyan);
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+}
+
+.neon-text-magenta {
+  color: var(--color-neon-magenta);
+  text-shadow: 0 0 10px rgba(255, 0, 170, 0.5);
+}
+
+.neon-text-green {
+  color: var(--color-neon-green);
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+}
+
+/* Progress bar with neon glow */
+.neon-progress {
+  height: 4px;
+  background: var(--color-surface);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.neon-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-neon-cyan), var(--color-neon-blue));
+  box-shadow: 0 0 8px var(--color-neon-cyan);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+/* Pulse flow animation for pipeline connections */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes data-flow {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.data-flow-line {
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-neon-cyan) 30%,
+    var(--color-neon-cyan) 70%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: data-flow 3s linear infinite;
+}
+
+/* Skill badge styles */
+.skill-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: 1px solid;
+}
+
+.skill-badge-active {
+  color: var(--color-neon-cyan);
+  border-color: rgba(0, 240, 255, 0.3);
+  background: rgba(0, 240, 255, 0.08);
+}
+
+.skill-badge-configured {
+  color: var(--color-neon-blue);
+  border-color: rgba(68, 102, 255, 0.3);
+  background: rgba(68, 102, 255, 0.08);
+}
+
+.skill-badge-suggested {
+  color: var(--color-neon-yellow);
+  border-color: rgba(255, 170, 0, 0.3);
+  background: rgba(255, 170, 0, 0.08);
+}
+
+.skill-badge-dim {
+  color: var(--color-text-muted);
+  border-color: rgba(85, 85, 119, 0.3);
+  background: rgba(85, 85, 119, 0.05);
+}
+
+/* Kanban column */
+.kanban-column {
+  min-width: 260px;
+  max-width: 300px;
+  flex-shrink: 0;
+}
+
+/* Intervention panel */
+.intervention-panel {
+  background: linear-gradient(135deg, rgba(10, 10, 15, 0.95), rgba(13, 13, 21, 0.95));
+  backdrop-filter: blur(24px);
+  border-left: 1px solid var(--color-neon-red);
+  box-shadow: -4px 0 24px rgba(255, 51, 102, 0.1);
+}
+
+.neon-text-red {
+  color: var(--color-neon-red);
+  text-shadow: 0 0 10px rgba(255, 51, 102, 0.5);
+}
+
+/* Intervention badge pulse */
+@keyframes intervention-pulse {
+  0%, 100% { box-shadow: 0 0 4px var(--color-neon-red); }
+  50% { box-shadow: 0 0 12px var(--color-neon-red), 0 0 24px rgba(255, 51, 102, 0.3); }
+}
+
+.intervention-pulse {
+  animation: intervention-pulse 1.5s ease-in-out infinite;
+}
+
+/* Tab active underline glow */
+.tab-glow-active {
+  border-bottom: 2px solid var(--color-neon-red);
+  box-shadow: 0 2px 8px rgba(255, 51, 102, 0.4);
+}
+
+/* Smooth transitions */
+* {
+  transition-property: color, background-color, border-color, box-shadow;
+  transition-timing-function: ease;
+  transition-duration: 0.15s;
+}
