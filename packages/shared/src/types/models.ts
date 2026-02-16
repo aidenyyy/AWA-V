@@ -203,6 +203,7 @@ export type InterventionStatus = "pending" | "resolved";
 export interface Intervention {
   id: string;
   pipelineId: string;
+  taskId: string | null;
   stageType: string;
   question: string;
   context: string; // JSON

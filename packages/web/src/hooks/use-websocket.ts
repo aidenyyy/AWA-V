@@ -63,8 +63,11 @@ export function useWebSocket() {
         case "consultation:requested":
           upsertConsultation(event.consultation);
           addNotification({
-            level: "info",
-            title: "Consultation Requested",
+            level: event.consultation.blocking === 1 ? "warning" : "info",
+            title:
+              event.consultation.blocking === 1
+                ? "Blocking Consultation"
+                : "Consultation Requested",
             message: event.consultation.question,
             pipelineId: event.consultation.pipelineId,
           });

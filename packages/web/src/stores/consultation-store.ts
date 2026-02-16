@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { immer } from "zustand/middleware/immer";
 import type { Consultation } from "@awa-v/shared";
 
@@ -23,3 +24,12 @@ export const useConsultationStore = create<ConsultationState>()(
   }))
 );
 
+export function usePendingConsultationsByPipeline(pipelineId: string) {
+  return useConsultationStore(
+    useShallow((s) =>
+      s.consultations.filter(
+        (c) => c.pipelineId === pipelineId && c.status === "pending"
+      )
+    )
+  );
+}

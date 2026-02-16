@@ -159,6 +159,15 @@ export const api = {
       body: JSON.stringify({ response }),
     }),
 
+  // Consultations
+  getConsultations: (pipelineId: string) =>
+    request<unknown[]>(`/api/consultations?pipelineId=${pipelineId}`),
+  respondToConsultation: (id: string, response: string) =>
+    request<unknown>(`/api/consultations/${id}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ response }),
+    }),
+
   // Plugins
   getInstalledPlugins: () => request<unknown[]>("/api/plugins/installed"),
   getAvailablePlugins: () => request<unknown[]>("/api/plugins/available"),

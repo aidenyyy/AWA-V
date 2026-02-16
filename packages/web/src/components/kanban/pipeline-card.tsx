@@ -8,9 +8,7 @@ import { SkillBadges } from "./skill-badges";
 import { ProgressBar } from "./progress-bar";
 import { ModelBadge } from "./model-badge";
 import { TokenBar } from "./token-bar";
-import { InterventionBadge } from "../intervention/intervention-badge";
 import { CancelConfirmModal } from "../modals/cancel-confirm-modal";
-import { useInterventionStore } from "@/stores/intervention-store";
 import { api } from "@/lib/api-client";
 import type { Pipeline } from "@awa-v/shared";
 
@@ -26,7 +24,6 @@ interface PipelineCardProps {
   outputTokens?: number;
   elapsed?: string;
   isActionRequired?: boolean;
-  pendingInterventionCount?: number;
 }
 
 function formatTokens(n: number): string {
@@ -47,9 +44,7 @@ export function PipelineCard({
   outputTokens,
   elapsed,
   isActionRequired = false,
-  pendingInterventionCount = 0,
 }: PipelineCardProps) {
-  const openPanel = useInterventionStore((s) => s.openPanel);
   const [showCancelModal, setShowCancelModal] = useState(false);
 
   const isTerminal = ["completed", "failed", "cancelled"].includes(pipeline.state);
@@ -128,17 +123,6 @@ export function PipelineCard({
           <span className="text-[10px] font-mono uppercase tracking-widest text-neon-yellow">
             Action Required
           </span>
-        </div>
-      )}
-
-      {/* Intervention badge */}
-      {pendingInterventionCount > 0 && (
-        <div className="mb-2">
-          <InterventionBadge
-            pipelineId={pipeline.id}
-            pendingCount={pendingInterventionCount}
-            onRespond={() => openPanel(pipeline.id)}
-          />
         </div>
       )}
 

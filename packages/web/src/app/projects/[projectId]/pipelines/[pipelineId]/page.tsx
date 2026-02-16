@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api-client";
 import { useSubscribeToPipeline } from "@/hooks/use-websocket";
@@ -10,7 +10,11 @@ import { ClaudeStreamViewer } from "@/components/stream/claude-stream-viewer";
 import { ProgressBar } from "@/components/kanban/progress-bar";
 import { CostBadge } from "@/components/layout/cost-badge";
 import { CancelConfirmModal } from "@/components/modals/cancel-confirm-modal";
+import { ConversationModal } from "@/components/conversation/conversation-modal";
 import { useSessionStore } from "@/stores/session-store";
+import { useInterventionStore } from "@/stores/intervention-store";
+import { useConsultationStore } from "@/stores/consultation-store";
+import { useNotificationStore } from "@/stores/notification-store";
 import { useShallow } from "zustand/react/shallow";
 import { cn } from "@/lib/cn";
 import type { Pipeline, Plan, Stage, Task, ClaudeSession, Project } from "@awa-v/shared";
@@ -47,16 +51,30 @@ export default function PipelineDetailPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [conversationOpen, setConversationOpen] = useState(false);
+  const [conversationTaskId, setConversationTaskId] = useState<string | null>(null);
+  const [conversationTab, setConversationTab] = useState<"blocking" | "consultation">("blocking");
 
   useSubscribeToPipeline(pipelineId);
 
   const pipeline = usePipelineStore((s) => s.pipelines[pipelineId]);
   const setSessions = useSessionStore((s) => s.setSessions);
+  const interventions = useInterventionStore((s) => s.interventions);
+  const addIntervention = useInterventionStore((s) => s.addIntervention);
+  const consultations = useConsultationStore((s) => s.consultations);
+  const upsertConsultation = useConsultationStore((s) => s.upsertConsultation);
+  const addNotification = useNotificationStore((s) => s.addNotification);
 
   useEffect(() => {
     api.getPipeline(pipelineId).then((d) => setDetail(d as PipelineDetail));
     api.getProject(projectId).then((p) => setProject(p as Project));
-  }, [pipelineId, projectId]);
+    api.getInterventions(pipelineId).then((rows) => {
+      for (const row of rows as any[]) addIntervention(row);
+    });
+    api.getConsultations(pipelineId).then((rows) => {
+      for (const row of rows as any[]) upsertConsultation(row);
+    });
+  }, [pipelineId, projectId, addIntervention, upsertConsultation]);
 
   useEffect(() => {
     if (!detail?.stages) return;
@@ -65,6 +83,40 @@ export default function PipelineDetailPage() {
       .then((results) => setSessions(results.flat() as ClaudeSession[]))
       .catch(() => {});
   }, [detail, setSessions]);
+
+  // When modal is open on task A, notify if new blocking appears on other tasks.
+  const lastBlockingByTaskRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    if (!conversationOpen || !conversationTaskId) return;
+    const pendingBlockingByTask: Record<string, number> = {};
+    for (const i of interventions) {
+      if (i.pipelineId === pipelineId && i.status === "pending" && i.taskId) {
+        pendingBlockingByTask[i.taskId] = (pendingBlockingByTask[i.taskId] ?? 0) + 1;
+      }
+    }
+    for (const c of consultations) {
+      if (c.pipelineId === pipelineId && c.status === "pending" && c.blocking === 1 && c.taskId) {
+        pendingBlockingByTask[c.taskId] = (pendingBlockingByTask[c.taskId] ?? 0) + 1;
+      }
+    }
+
+    for (const [taskId, count] of Object.entries(pendingBlockingByTask)) {
+      const prev = lastBlockingByTaskRef.current[taskId] ?? 0;
+      if (taskId !== conversationTaskId && count > prev) {
+        addNotification({
+          level: "warning",
+          title: "Blocking Conversation Pending",
+          message: "Another task has a new blocking question waiting for response.",
+          pipelineId,
+        });
+      }
+    }
+
+    for (const key of Object.keys(lastBlockingByTaskRef.current)) {
+      delete lastBlockingByTaskRef.current[key];
+    }
+    Object.assign(lastBlockingByTaskRef.current, pendingBlockingByTask);
+  }, [addNotification, consultations, conversationOpen, conversationTaskId, interventions, pipelineId]);
 
   const deduplicatedStages = useMemo(() => {
     if (!detail?.stages) return [];
@@ -96,6 +148,14 @@ export default function PipelineDetailPage() {
   const isTerminal = ["completed", "failed", "cancelled"].includes(currentPipeline.state);
   const isPaused = currentPipeline.state === "paused";
   const isRunning = !isTerminal && !isPaused;
+  const pipelinePendingBlocking = interventions.filter(
+    (i) => i.pipelineId === pipelineId && i.status === "pending"
+  ).length + consultations.filter(
+    (c) => c.pipelineId === pipelineId && c.status === "pending" && c.blocking === 1
+  ).length;
+  const pipelinePendingConsult = consultations.filter(
+    (c) => c.pipelineId === pipelineId && c.status === "pending" && c.blocking === 0
+  ).length;
 
   async function handlePause() {
     try { await api.pausePipeline(pipelineId); } catch { /* silent ok */ }
@@ -148,6 +208,12 @@ export default function PipelineDetailPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <span className="rounded border border-neon-red/30 bg-neon-red/10 px-2 py-1 font-mono text-[10px] text-neon-red">
+              B {pipelinePendingBlocking}
+            </span>
+            <span className="rounded border border-neon-yellow/30 bg-neon-yellow/10 px-2 py-1 font-mono text-[10px] text-neon-yellow">
+              C {pipelinePendingConsult}
+            </span>
             {/* Pipeline controls */}
             {isRunning && (
               <button
@@ -293,7 +359,7 @@ export default function PipelineDetailPage() {
             <div className="grid gap-2">
               {detail.stages.flatMap((s) =>
                 s.tasks.map((task) => (
-                  <button
+                  <div
                     key={task.id}
                     onClick={() =>
                       setSelectedTaskId(
@@ -322,13 +388,74 @@ export default function PipelineDetailPage() {
                         <span className="font-mono text-xs text-text-primary">
                           {task.agentRole}
                         </span>
+                        {(() => {
+                          const blockingCount =
+                            interventions.filter(
+                              (i) =>
+                                i.pipelineId === pipelineId &&
+                                i.status === "pending" &&
+                                i.taskId === task.id
+                            ).length +
+                            consultations.filter(
+                              (c) =>
+                                c.pipelineId === pipelineId &&
+                                c.status === "pending" &&
+                                c.taskId === task.id &&
+                                c.blocking === 1
+                            ).length;
+                          const consultCount = consultations.filter(
+                            (c) =>
+                              c.pipelineId === pipelineId &&
+                              c.status === "pending" &&
+                              c.taskId === task.id &&
+                              c.blocking === 0
+                          ).length;
+                          return (
+                            <>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConversationTaskId(task.id);
+                                  setConversationTab("blocking");
+                                  setConversationOpen(true);
+                                }}
+                                className={cn(
+                                  "rounded border px-1.5 py-0.5 font-mono text-[10px]",
+                                  blockingCount > 0
+                                    ? "border-neon-red/40 bg-neon-red/10 text-neon-red"
+                                    : "border-border text-text-muted"
+                                )}
+                                title="Pending blocking items"
+                              >
+                                B {blockingCount}
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConversationTaskId(task.id);
+                                  setConversationTab("consultation");
+                                  setConversationOpen(true);
+                                }}
+                                className={cn(
+                                  "rounded border px-1.5 py-0.5 font-mono text-[10px]",
+                                  consultCount > 0
+                                    ? "border-neon-yellow/40 bg-neon-yellow/10 text-neon-yellow"
+                                    : "border-border text-text-muted"
+                                )}
+                                title="Pending consultations"
+                              >
+                                C {consultCount}
+                              </button>
+                            </>
+                          );
+                        })()}
                       </div>
                       <span className="font-mono text-[10px] text-text-muted uppercase">
                         {task.state}
                       </span>
                     </div>
                     <TaskSessionInfo taskId={task.id} />
-                  </button>
+                  </div>
                 ))
               )}
             </div>
@@ -352,6 +479,16 @@ export default function PipelineDetailPage() {
           </div>
           <ClaudeStreamViewer taskId={selectedTaskId} />
         </div>
+      )}
+
+      {conversationOpen && conversationTaskId && (
+        <ConversationModal
+          open={conversationOpen}
+          pipelineId={pipelineId}
+          taskId={conversationTaskId}
+          initialTab={conversationTab}
+          onClose={() => setConversationOpen(false)}
+        />
       )}
     </div>
   );

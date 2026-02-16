@@ -24,6 +24,20 @@ export const interventionRepo = {
       .all();
   },
 
+  getPendingForTask(pipelineId: string, taskId: string) {
+    return db
+      .select()
+      .from(schema.interventions)
+      .where(
+        and(
+          eq(schema.interventions.pipelineId, pipelineId),
+          eq(schema.interventions.taskId, taskId),
+          eq(schema.interventions.status, "pending")
+        )
+      )
+      .all();
+  },
+
   getById(id: string) {
     return db
       .select()
@@ -34,6 +48,7 @@ export const interventionRepo = {
 
   create(data: {
     pipelineId: string;
+    taskId?: string;
     stageType: string;
     question: string;
     context: string;
@@ -45,6 +60,7 @@ export const interventionRepo = {
       .values({
         id,
         pipelineId: data.pipelineId,
+        taskId: data.taskId,
         stageType: data.stageType,
         question: data.question,
         context: data.context,

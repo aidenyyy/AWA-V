@@ -167,6 +167,7 @@ export const interventions = sqliteTable("interventions", {
   pipelineId: text("pipeline_id")
     .notNull()
     .references(() => pipelines.id),
+  taskId: text("task_id").references(() => tasks.id),
   stageType: text("stage_type").notNull(),
   question: text("question").notNull(),
   context: text("context").notNull(), // JSON

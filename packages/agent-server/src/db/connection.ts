@@ -125,6 +125,7 @@ export function initDatabase() {
     CREATE TABLE IF NOT EXISTS interventions (
       id TEXT PRIMARY KEY,
       pipeline_id TEXT NOT NULL REFERENCES pipelines(id),
+      task_id TEXT REFERENCES tasks(id),
       stage_type TEXT NOT NULL,
       question TEXT NOT NULL,
       context TEXT NOT NULL,
@@ -227,6 +228,7 @@ export function initDatabase() {
     `ALTER TABLE pipelines ADD COLUMN self_merged INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE pipelines ADD COLUMN paused_from_state TEXT`,
     `ALTER TABLE skills ADD COLUMN starred INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE interventions ADD COLUMN task_id TEXT REFERENCES tasks(id)`,
   ];
 
   for (const sql of migrations) {

@@ -34,6 +34,7 @@ class InterventionManager {
    */
   async requestIntervention(opts: {
     pipelineId: string;
+    taskId?: string;
     stageType: string;
     question: string;
     context: Record<string, unknown>;
@@ -41,17 +42,28 @@ class InterventionManager {
     // Clear the stage timeout — human decisions can take hours
     selfHealer.clearTimeout(opts.pipelineId);
 
-    const intervention = interventionRepo.create({
-      pipelineId: opts.pipelineId,
-      stageType: opts.stageType,
-      question: opts.question,
-      context: JSON.stringify(opts.context),
-    });
+    // Enforce a single pending blocking item per task.
+    // Cross-task blocking can still happen in parallel.
+    let intervention =
+      opts.taskId
+        ? interventionRepo.getPendingForTask(opts.pipelineId, opts.taskId)[0]
+        : undefined;
+
+    if (!intervention) {
+      intervention = interventionRepo.create({
+        pipelineId: opts.pipelineId,
+        taskId: opts.taskId,
+        stageType: opts.stageType,
+        question: opts.question,
+        context: JSON.stringify(opts.context),
+      });
+    }
 
     log.info(
       {
         interventionId: intervention.id,
         pipelineId: opts.pipelineId,
+        taskId: opts.taskId,
         stageType: opts.stageType,
       },
       "Intervention requested — timeout cleared"

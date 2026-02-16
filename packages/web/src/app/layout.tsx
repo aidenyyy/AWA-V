@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { InterventionPanel } from "@/components/intervention/intervention-panel";
 import { UpdateBanner } from "@/components/layout/update-banner";
+import { NotificationToasts } from "@/components/layout/notification-toasts";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,7 +18,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-void antialiased" suppressHydrationWarning>
         <UpdateBanner />
         {children}
-        <InterventionPanel />
+        <NotificationToasts />
       </body>
     </html>
   );
