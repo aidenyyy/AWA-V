@@ -5,7 +5,6 @@ import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api-client";
 import { useSubscribeToPipeline } from "@/hooks/use-websocket";
 import { usePipelineStore } from "@/stores/pipeline-store";
-import { PlanReviewPanel } from "@/components/plan/plan-review-panel";
 import { ClaudeStreamViewer } from "@/components/stream/claude-stream-viewer";
 import { ProgressBar } from "@/components/kanban/progress-bar";
 import { CostBadge } from "@/components/layout/cost-badge";
@@ -27,9 +26,9 @@ interface PipelineDetail extends Pipeline {
 const STAGE_LABELS: Record<string, string> = {
   requirements_input: "Requirements",
   plan_generation: "Planning",
-  human_review: "Human Review",
-  adversarial_review: "Adversarial Review",
-  context_prep: "Context Prep",
+  human_review: "Planning",
+  adversarial_review: "Planning",
+  context_prep: "Planning",
   parallel_execution: "Execution",
   testing: "Testing",
   code_review: "Code Review",
@@ -120,14 +119,22 @@ export default function PipelineDetailPage() {
 
   const deduplicatedStages = useMemo(() => {
     if (!detail?.stages) return [];
+    const planningTypes = new Set([
+      "plan_generation",
+      "human_review",
+      "adversarial_review",
+      "context_prep",
+    ]);
     const byType = new Map<string, { stage: (typeof detail.stages)[0]; count: number }>();
     for (const stage of detail.stages) {
-      const existing = byType.get(stage.type);
+      const displayType = planningTypes.has(stage.type) ? "plan_generation" : stage.type;
+      const existing = byType.get(displayType);
       if (existing) {
         existing.count++;
-        existing.stage = stage; // keep latest
+        // keep the latest stage instance so state reflects current planning sub-step
+        existing.stage = stage;
       } else {
-        byType.set(stage.type, { stage, count: 1 });
+        byType.set(displayType, { stage: { ...stage, type: displayType }, count: 1 });
       }
     }
     return Array.from(byType.values());
@@ -144,7 +151,6 @@ export default function PipelineDetailPage() {
   }
 
   const latestPlan = detail?.plans?.[0];
-  const isReviewState = currentPipeline.state === "human_review";
   const isTerminal = ["completed", "failed", "cancelled"].includes(currentPipeline.state);
   const isPaused = currentPipeline.state === "paused";
   const isRunning = !isTerminal && !isPaused;
@@ -214,6 +220,17 @@ export default function PipelineDetailPage() {
             <span className="rounded border border-neon-yellow/30 bg-neon-yellow/10 px-2 py-1 font-mono text-[10px] text-neon-yellow">
               C {pipelinePendingConsult}
             </span>
+            <button
+              onClick={() => {
+                setConversationTaskId(null);
+                setConversationTab("blocking");
+                setConversationOpen(true);
+              }}
+              className="rounded-md border border-neon-cyan/40 bg-neon-cyan/10 px-2.5 py-1 font-mono text-[10px] text-neon-cyan transition hover:bg-neon-cyan/20"
+              title="Open planning and task Q&A"
+            >
+              Q&A
+            </button>
             {/* Pipeline controls */}
             {isRunning && (
               <button
@@ -270,6 +287,8 @@ export default function PipelineDetailPage() {
                       ? "border-neon-green/30 bg-neon-green/5 text-neon-green"
                       : stage.state === "running"
                         ? "border-neon-cyan/30 bg-neon-cyan/5 text-neon-cyan"
+                        : stage.state === "skipped"
+                          ? "border-neon-yellow/30 bg-neon-yellow/5 text-neon-yellow"
                         : stage.state === "failed"
                           ? "border-neon-red/30 bg-neon-red/5 text-neon-red"
                           : "border-border bg-surface/30 text-text-muted"
@@ -282,6 +301,8 @@ export default function PipelineDetailPage() {
                         ? "indicator-active"
                         : stage.state === "running"
                           ? "indicator-running"
+                          : stage.state === "skipped"
+                            ? "indicator-warning"
                           : stage.state === "failed"
                             ? "indicator-error"
                             : "indicator-idle"
@@ -294,6 +315,11 @@ export default function PipelineDetailPage() {
                   {stage.state === "failed" && stage.errorMessage && (
                     <span className="ml-1.5 max-w-[200px] truncate text-[9px] text-neon-red/70" title={stage.errorMessage}>
                       {stage.errorMessage}
+                    </span>
+                  )}
+                  {stage.state === "skipped" && stage.qualityGateResult && (
+                    <span className="ml-1.5 max-w-[200px] truncate text-[9px] text-neon-yellow/70" title={stage.qualityGateResult}>
+                      {stage.qualityGateResult}
                     </span>
                   )}
                 </div>
@@ -339,15 +365,26 @@ export default function PipelineDetailPage() {
           </div>
         )}
 
-        {/* Plan review (when in human_review state) */}
-        {isReviewState && latestPlan && (
-          <PlanReviewPanel
-            planId={latestPlan.id}
-            content={latestPlan.content}
-            taskBreakdown={latestPlan.taskBreakdown as any[]}
-            version={latestPlan.version}
-            adversarialFeedback={latestPlan.adversarialFeedback}
-          />
+        {/* Latest plan snapshot */}
+        {latestPlan && (
+          <div className="mb-6 rounded-lg border border-border/70 bg-surface/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-[11px] text-text-muted">Latest Plan v{latestPlan.version}</span>
+              <button
+                onClick={() => {
+                  setConversationTaskId(null);
+                  setConversationTab("blocking");
+                  setConversationOpen(true);
+                }}
+                className="rounded border border-neon-cyan/40 bg-neon-cyan/10 px-2 py-1 font-mono text-[10px] text-neon-cyan"
+              >
+                Continue Q&A
+              </button>
+            </div>
+            <p className="mt-2 max-h-20 overflow-hidden whitespace-pre-wrap text-[11px] text-text-secondary">
+              {latestPlan.content}
+            </p>
+          </div>
         )}
 
         {/* Tasks */}
@@ -481,11 +518,11 @@ export default function PipelineDetailPage() {
         </div>
       )}
 
-      {conversationOpen && conversationTaskId && (
+      {conversationOpen && (
         <ConversationModal
           open={conversationOpen}
           pipelineId={pipelineId}
-          taskId={conversationTaskId}
+          taskId={conversationTaskId ?? undefined}
           initialTab={conversationTab}
           onClose={() => setConversationOpen(false)}
         />

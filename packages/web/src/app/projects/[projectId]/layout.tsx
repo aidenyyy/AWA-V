@@ -72,12 +72,20 @@ export default function ProjectLayout({
           }
           subtitle={project?.repoPath}
           actions={
-            <Link
-              href={`/projects/${projectId}/pipelines/new`}
-              className="rounded-lg border border-neon-cyan/40 bg-neon-cyan/10 px-3 py-1.5 font-mono text-xs text-neon-cyan transition hover:bg-neon-cyan/20"
-            >
-              + Pipeline
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/projects/${projectId}/pipelines/new`}
+                className="rounded-lg border border-neon-cyan/40 bg-neon-cyan/10 px-3 py-1.5 font-mono text-xs text-neon-cyan transition hover:bg-neon-cyan/20"
+              >
+                + Pipeline
+              </Link>
+              <Link
+                href={`/projects/${projectId}?archived=1`}
+                className="rounded-lg border border-neon-magenta/40 bg-neon-magenta/10 px-3 py-1.5 font-mono text-xs text-neon-magenta transition hover:bg-neon-magenta/20"
+              >
+                Archived
+              </Link>
+            </div>
           }
         />
 

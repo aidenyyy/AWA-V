@@ -35,7 +35,7 @@ type ConversationItem =
 interface ConversationModalProps {
   open: boolean;
   pipelineId: string;
-  taskId: string;
+  taskId?: string;
   initialTab: ConversationTab;
   onClose: () => void;
 }
@@ -72,12 +72,14 @@ export function ConversationModal({
     }
   }, [open, initialTab, taskId]);
 
+  const taskFilterEnabled = !!taskId;
+
   const blockingItems = useMemo<ConversationItem[]>(() => {
     const pendingInterventions = interventions
       .filter(
         (i) =>
           i.pipelineId === pipelineId &&
-          i.taskId === taskId &&
+          (!taskFilterEnabled || i.taskId === taskId) &&
           i.status === "pending"
       )
       .map((i): ConversationItem => ({
@@ -95,7 +97,7 @@ export function ConversationModal({
       .filter(
         (c) =>
           c.pipelineId === pipelineId &&
-          c.taskId === taskId &&
+          (!taskFilterEnabled || c.taskId === taskId) &&
           c.status === "pending" &&
           c.blocking === 1
       )
@@ -112,16 +114,16 @@ export function ConversationModal({
       }));
 
     return [...pendingInterventions, ...pendingBlockConsultations].sort(
-      (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt)
+      (a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)
     );
-  }, [consultations, interventions, pipelineId, taskId]);
+  }, [consultations, interventions, pipelineId, taskFilterEnabled, taskId]);
 
   const consultItems = useMemo<ConversationItem[]>(() => {
     return consultations
       .filter(
         (c) =>
           c.pipelineId === pipelineId &&
-          c.taskId === taskId &&
+          (!taskFilterEnabled || c.taskId === taskId) &&
           c.status === "pending" &&
           c.blocking === 0
       )
@@ -136,8 +138,8 @@ export function ConversationModal({
         stageType: c.stageType,
         blocking: c.blocking,
       }))
-      .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
-  }, [consultations, pipelineId, taskId]);
+      .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
+  }, [consultations, pipelineId, taskFilterEnabled, taskId]);
 
   const currentList = tab === "blocking" ? blockingItems : consultItems;
   const selected = currentList.find((i) => i.id === selectedId) ?? currentList[0] ?? null;
@@ -147,10 +149,12 @@ export function ConversationModal({
     if (item.kind === "intervention") {
       const resolved = await api.respondToIntervention(item.id, response);
       resolveIntervention(item.id, resolved as Intervention);
+      setResponseText("");
       return;
     }
     const answered = await api.respondToConsultation(item.id, response);
     upsertConsultation(answered as Consultation);
+    setResponseText("");
   }
 
   if (!open) return null;
@@ -162,7 +166,7 @@ export function ConversationModal({
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-3">
             <h2 className="font-mono text-xs uppercase tracking-widest text-text-primary">
-              Conversation
+              {taskFilterEnabled ? "Task Conversation" : "Pipeline Conversation"}
             </h2>
             <span className="rounded border border-neon-red/30 bg-neon-red/10 px-1.5 py-0.5 text-[10px] font-mono text-neon-red">
               B {blockingItems.length}
@@ -226,6 +230,11 @@ export function ConversationModal({
                   <div className="truncate font-mono text-[10px] text-text-secondary">
                     {item.stageType.replace(/_/g, " ")}
                   </div>
+                  {!taskFilterEnabled && (
+                    <div className="truncate font-mono text-[10px] text-text-muted">
+                      {item.kind === "intervention" ? "I" : "C"} • {item.id.slice(0, 8)}
+                    </div>
+                  )}
                   <div className="truncate text-xs text-text-primary">{item.question}</div>
                   <div className="mt-1 font-mono text-[10px] text-text-muted">
                     {new Date(item.createdAt).toLocaleTimeString()}

@@ -49,6 +49,8 @@ export const api = {
   // Pipelines
   getPipelines: (projectId: string) =>
     request<unknown[]>(`/api/pipelines?projectId=${projectId}`),
+  getArchivedPipelines: (projectId: string) =>
+    request<unknown[]>(`/api/pipelines/archived?projectId=${projectId}`),
   getPipeline: (id: string) => request<unknown>(`/api/pipelines/${id}`),
   createPipeline: (data: { projectId: string; requirements: string }) =>
     request<unknown>("/api/pipelines", {
@@ -63,6 +65,10 @@ export const api = {
     request<unknown>(`/api/pipelines/${id}/pause`, { method: "POST" }),
   resumePipeline: (id: string) =>
     request<unknown>(`/api/pipelines/${id}/resume`, { method: "POST" }),
+  retryPipeline: (id: string) =>
+    request<unknown>(`/api/pipelines/${id}/retry`, { method: "POST" }),
+  deleteArchivedPipeline: (id: string) =>
+    request<void>(`/api/pipelines/${id}`, { method: "DELETE" }),
   getPendingSelfUpdates: () =>
     request<unknown[]>("/api/pipelines/pending-self-updates"),
   mergeSelfPipeline: (id: string) =>

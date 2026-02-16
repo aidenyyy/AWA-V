@@ -29,9 +29,10 @@ const TRANSITIONS: Record<string, Partial<Record<TransitionOutcome, StateValue>>
     next: PipelineState.PLAN_GENERATION,
   },
   [PipelineState.PLAN_GENERATION]: {
-    next: PipelineState.HUMAN_REVIEW,
+    next: PipelineState.ADVERSARIAL_REVIEW,
   },
   [PipelineState.HUMAN_REVIEW]: {
+    // Deprecated path kept for compatibility with historical rows.
     approve: PipelineState.ADVERSARIAL_REVIEW,
     edit: PipelineState.PLAN_GENERATION,
     reject: PipelineState.CANCELLED,

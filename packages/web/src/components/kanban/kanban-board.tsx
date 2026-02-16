@@ -13,30 +13,16 @@ interface KanbanBoardProps {
 
 const COLUMNS = [
   {
-    key: PipelineState.REQUIREMENTS_INPUT,
-    title: "Requirements",
-    accent: "border-text-muted",
-  },
-  {
     key: PipelineState.PLAN_GENERATION,
     title: "Planning",
     accent: "border-neon-cyan",
-  },
-  {
-    key: PipelineState.HUMAN_REVIEW,
-    title: "Human Review",
-    accent: "border-neon-yellow",
+    states: [
+      PipelineState.PLAN_GENERATION,
+      PipelineState.HUMAN_REVIEW,
+      PipelineState.ADVERSARIAL_REVIEW,
+      PipelineState.CONTEXT_PREP,
+    ],
     isAction: true,
-  },
-  {
-    key: PipelineState.ADVERSARIAL_REVIEW,
-    title: "Adversarial",
-    accent: "border-neon-magenta",
-  },
-  {
-    key: PipelineState.CONTEXT_PREP,
-    title: "Context Prep",
-    accent: "border-neon-blue",
   },
   {
     key: PipelineState.PARALLEL_EXECUTION,
@@ -81,24 +67,13 @@ export function KanbanBoard({ pipelines, projectId }: KanbanBoardProps) {
     });
   }, [pipelines]);
 
-  // Also show failed/cancelled/paused in a special area
-  const failedPipelines = pipelines.filter(
-    (p) => p.state === "failed" || p.state === "cancelled"
-  );
+  // Also show paused in a special area
   const pausedPipelines = pipelines.filter(
     (p) => p.state === "paused"
   );
 
   return (
     <div className="flex h-full gap-3 overflow-x-auto p-4">
-      {/* Quick-add button */}
-      <a
-        href={`/projects/${projectId}/pipelines/new`}
-        className="flex flex-shrink-0 items-center justify-center rounded-lg border border-dashed border-border/50 px-4 font-mono text-xs text-text-muted transition hover:border-neon-cyan/40 hover:text-neon-cyan"
-      >
-        + Pipeline
-      </a>
-
       {columns.map((col) => (
         <KanbanColumn
           key={col.key}
@@ -143,23 +118,6 @@ export function KanbanBoard({ pipelines, projectId }: KanbanBoardProps) {
         </KanbanColumn>
       )}
 
-      {/* Failed/Cancelled column */}
-      {failedPipelines.length > 0 && (
-        <KanbanColumn
-          title="Failed"
-          count={failedPipelines.length}
-          accentColor="border-neon-red"
-        >
-          {failedPipelines.map((pipeline) => (
-            <PipelineCard
-              key={pipeline.id}
-              pipeline={pipeline}
-              projectId={projectId}
-              progress={0}
-            />
-          ))}
-        </KanbanColumn>
-      )}
     </div>
   );
 }
@@ -167,10 +125,10 @@ export function KanbanBoard({ pipelines, projectId }: KanbanBoardProps) {
 function estimateProgress(state: string): number {
   const progressMap: Record<string, number> = {
     requirements_input: 5,
-    plan_generation: 15,
+    plan_generation: 25,
     human_review: 25,
-    adversarial_review: 35,
-    context_prep: 45,
+    adversarial_review: 25,
+    context_prep: 25,
     parallel_execution: 60,
     testing: 75,
     code_review: 85,

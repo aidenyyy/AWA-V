@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
+import { ArchivedPipelinesModal } from "@/components/modals/archived-pipelines-modal";
 import { api } from "@/lib/api-client";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { Pipeline } from "@awa-v/shared";
@@ -10,14 +11,21 @@ import { useShallow } from "zustand/react/shallow";
 
 export default function ProjectKanbanPage() {
   const params = useParams();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const projectId = params.projectId as string;
   const [loading, setLoading] = useState(true);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const setPipelines = usePipelineStore((s) => s.setPipelines);
   const pipelineMap = usePipelineStore(useShallow((s) => s.pipelines));
-  const pipelines = useMemo(
-    () => Object.values(pipelineMap).filter((p) => p.projectId === projectId),
-    [pipelineMap, projectId]
-  );
+  const pipelines = useMemo(() => {
+    return Object.values(pipelineMap).filter(
+      (p) =>
+        p.projectId === projectId &&
+        p.state !== "failed" &&
+        p.state !== "cancelled"
+    );
+  }, [pipelineMap, projectId]);
 
   useEffect(() => {
     api
@@ -27,6 +35,12 @@ export default function ProjectKanbanPage() {
       })
       .finally(() => setLoading(false));
   }, [projectId, setPipelines]);
+
+  useEffect(() => {
+    if (searchParams.get("archived") === "1") {
+      setArchivedOpen(true);
+    }
+  }, [searchParams]);
 
   if (loading) {
     return (
@@ -41,27 +55,22 @@ export default function ProjectKanbanPage() {
     );
   }
 
-  if (pipelines.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="glass-card max-w-md p-12 text-center">
-          <div className="mb-4 text-5xl opacity-20">▣</div>
-          <h3 className="font-mono text-sm font-semibold text-text-primary mb-2">
-            No Pipelines
-          </h3>
-          <p className="text-xs text-text-muted font-mono mb-6">
-            Start a new pipeline to begin AI-driven development
-          </p>
-          <a
-            href={`/projects/${projectId}/pipelines/new`}
-            className="inline-block rounded-lg border border-neon-cyan/40 bg-neon-cyan/10 px-4 py-2.5 font-mono text-xs text-neon-cyan transition hover:bg-neon-cyan/20 hover:shadow-[0_0_16px_rgba(0,240,255,0.15)]"
-          >
-            + New Pipeline
-          </a>
-        </div>
+  return (
+    <>
+      <ArchivedPipelinesModal
+        open={archivedOpen}
+        projectId={projectId}
+        onClose={() => {
+          setArchivedOpen(false);
+          router.replace(`/projects/${projectId}`);
+        }}
+        onChanged={() => {
+          api.getPipelines(projectId).then((data) => setPipelines(data as Pipeline[]));
+        }}
+      />
+      <div className="h-full">
+        <KanbanBoard pipelines={pipelines} projectId={projectId} />
       </div>
-    );
-  }
-
-  return <KanbanBoard pipelines={pipelines} projectId={projectId} />;
+    </>
+  );
 }

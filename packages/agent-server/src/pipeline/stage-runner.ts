@@ -75,7 +75,7 @@ function getEffectiveRepoPath(
 // ─── Types ──────────────────────────────────────────────────
 
 export interface StageResult {
-  outcome: "pass" | "fail" | "waiting";
+  outcome: "pass" | "fail" | "waiting" | "replan" | "cancel";
   error?: string;
 }
 
@@ -622,6 +622,29 @@ const stageHandlers: Record<string, StageHandler> = {
         { pipelineId, planId: plan.id, tasks: parsed.taskBreakdown.length },
         "Plan generated"
       );
+
+      // Planning gate 1: initial human review via the conversation modal.
+      // This keeps planning interactions in a single Q&A path.
+      const initialReview = await interventionManager.requestIntervention({
+        pipelineId,
+        stageType: "plan_generation",
+        question:
+          "Initial planning review: reply `approve` to continue, `replan` to regenerate, or `reject` to cancel.",
+        context: {
+          planId: plan.id,
+          summary: parsed.content.slice(0, 2000),
+          tasks: parsed.taskBreakdown,
+        },
+      });
+
+      const initial = initialReview.trim().toLowerCase();
+      if (initial.includes("reject") || initial.includes("abort") || initial.includes("cancel")) {
+        return { outcome: "cancel" };
+      }
+      if (initial.includes("replan") || initial.includes("edit")) {
+        return { outcome: "replan" };
+      }
+
       return { outcome: "pass" };
     } catch (err) {
       return { outcome: "fail", error: (err as Error).message };
@@ -702,33 +725,36 @@ const stageHandlers: Record<string, StageHandler> = {
       });
 
       if (verdict.verdict === "reject") {
-        // Ask user whether to proceed despite rejection
-        const response = await interventionManager.requestIntervention({
-          pipelineId,
-          stageType: "adversarial_review",
-          question: "Adversarial review rejected the plan. Proceed anyway or replan?",
-          context: {
-            verdict,
-            planContent: planContent.slice(0, 2000),
-            severity: verdict.severity ?? "unknown",
-          },
-        });
-
-        if (response === "proceed") {
-          log.info({ pipelineId }, "User chose to proceed despite adversarial rejection");
-          return { outcome: "pass" };
-        }
-        return { outcome: "fail", error: `Plan rejected: ${verdict.summary}` };
+        return { outcome: "replan" };
       }
-
-      return { outcome: "pass" };
     } catch {
       // Can't parse JSON — store raw feedback, pass through
       planRepo.update(plan.id, {
         adversarialFeedback: output.slice(0, 2000),
       });
-      return { outcome: "pass" };
     }
+
+    // Planning gate 2: final approval after adversarial Q&A is complete.
+    const finalReview = await interventionManager.requestIntervention({
+      pipelineId,
+      stageType: "adversarial_review",
+      question:
+        "Final planning approval: reply `approve` to finalize this plan, `replan` to iterate, or `reject` to cancel.",
+      context: {
+        planId: plan.id,
+        planContent: planContent.slice(0, 2000),
+      },
+    });
+
+    const final = finalReview.trim().toLowerCase();
+    if (final.includes("reject") || final.includes("abort") || final.includes("cancel")) {
+      return { outcome: "cancel" };
+    }
+    if (final.includes("replan") || final.includes("edit")) {
+      return { outcome: "replan" };
+    }
+
+    return { outcome: "pass" };
   },
 
   // Context prep: distribute skills and validate memory context.
@@ -1236,6 +1262,20 @@ export async function runStage(
       });
     } else if (result.outcome === "waiting") {
       stageRepo.update(stage.id, { qualityGateResult: "waiting" });
+    } else if (result.outcome === "replan") {
+      stageRepo.update(stage.id, {
+        state: StageState.SKIPPED,
+        completedAt: new Date().toISOString(),
+        qualityGateResult: "replan",
+        errorMessage: "",
+      });
+    } else if (result.outcome === "cancel") {
+      stageRepo.update(stage.id, {
+        state: StageState.SKIPPED,
+        completedAt: new Date().toISOString(),
+        qualityGateResult: "cancel",
+        errorMessage: "",
+      });
     }
 
     log.info({ pipelineId, stageType, outcome: result.outcome }, "Stage completed");

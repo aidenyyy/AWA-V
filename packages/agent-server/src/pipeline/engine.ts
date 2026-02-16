@@ -392,7 +392,9 @@ class PipelineEngine {
 
     // Intervention stages: re-park via the intervention manager
     if (
-      currentState === PipelineState.HUMAN_REVIEW
+      currentState === PipelineState.HUMAN_REVIEW ||
+      currentState === PipelineState.PLAN_GENERATION ||
+      currentState === PipelineState.ADVERSARIAL_REVIEW
     ) {
       log.info(
         { pipelineId, state: currentState },
@@ -567,6 +569,12 @@ class PipelineEngine {
       }
     } else if (result.outcome === "fail") {
       await this.handleStageFailure(pipelineId, stageType, result.error ?? "Unknown error");
+    } else if (result.outcome === "replan") {
+      log.info({ pipelineId, stageType }, "Stage requested replan");
+      await this.replan(pipelineId);
+    } else if (result.outcome === "cancel") {
+      log.info({ pipelineId, stageType }, "Stage requested cancellation");
+      await this.cancel(pipelineId);
     } else if (result.outcome === "waiting") {
       // Stage is waiting for external input (e.g. human review)
       // Pipeline stays in current state until input arrives
@@ -585,6 +593,30 @@ class PipelineEngine {
     stageType: string,
     error: string
   ): Promise<void> {
+    // Explicit user intents should bypass retry logic.
+    if (error.startsWith("REPLAN_REQUESTED:")) {
+      log.info({ pipelineId, stageType, reason: error }, "User requested replan");
+      await this.replan(pipelineId);
+      return;
+    }
+    if (error.startsWith("CANCEL_REQUESTED:")) {
+      log.info({ pipelineId, stageType, reason: error }, "User requested cancellation");
+      await this.cancel(pipelineId);
+      return;
+    }
+    // Non-JSON planning output is deterministic from prompt/format mismatch.
+    // Retrying the same stage immediately tends to spawn duplicate planners
+    // without improving outcome.
+    if (
+      stageType === PipelineState.PLAN_GENERATION &&
+      (error.includes("Unexpected token") ||
+        error.includes("Plan must contain 'content' and 'taskBreakdown'") ||
+        error.includes("missing 'title' or 'description'"))
+    ) {
+      await this.failPipeline(pipelineId, `Fatal planning parse error: ${error}`);
+      return;
+    }
+
     const action = selfHealer.handleFailure(pipelineId, stageType, error);
 
     switch (action) {
@@ -597,16 +629,11 @@ class PipelineEngine {
         );
         break;
 
-      case "replan":
-        log.info({ pipelineId, stageType }, "Replanning after repeated failures");
-        await this.replan(pipelineId);
-        break;
-
       case "fatal":
-        log.error({ pipelineId, stageType }, "Fatal failure; no retries or replans left");
+        log.error({ pipelineId, stageType }, "Fatal failure; retry limit exhausted");
         await this.failPipeline(
           pipelineId,
-          `Fatal failure in stage ${stageType}: ${error}`
+          `Fail fast after retries in stage ${stageType}: ${error}`
         );
         break;
     }

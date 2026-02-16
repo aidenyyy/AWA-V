@@ -9,13 +9,53 @@ import { pipelineEngine } from "../pipeline/engine.js";
 import { processManager } from "../claude/process-manager.js";
 import { worktreeManager } from "../git/worktree-manager.js";
 import { db, schema } from "../db/connection.js";
-import { count } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import { broadcaster } from "../ws/broadcaster.js";
 import pino from "pino";
 
 const log = pino({ name: "pipeline-routes" });
 
 export function registerPipelineRoutes(app: FastifyInstance) {
+  async function hardDeletePipeline(pipelineId: string): Promise<void> {
+    const tasks = taskRepo.getByPipeline(pipelineId);
+    const taskIds = tasks.map((t) => t.id);
+
+    // Remove child rows first (no ON DELETE CASCADE in schema).
+    for (const taskId of taskIds) {
+      db.delete(schema.claudeSessions)
+        .where(eq(schema.claudeSessions.taskId, taskId))
+        .run();
+    }
+
+    db.delete(schema.generatedTools)
+      .where(eq(schema.generatedTools.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.interventions)
+      .where(eq(schema.interventions.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.consultations)
+      .where(eq(schema.consultations.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.tasks)
+      .where(eq(schema.tasks.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.stages)
+      .where(eq(schema.stages.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.plans)
+      .where(eq(schema.plans.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.memory)
+      .where(eq(schema.memory.pipelineId, pipelineId))
+      .run();
+    db.delete(schema.evolutionLogs)
+      .where(eq(schema.evolutionLogs.triggerPipelineId, pipelineId))
+      .run();
+    db.delete(schema.pipelines)
+      .where(eq(schema.pipelines.id, pipelineId))
+      .run();
+  }
+
   // Dashboard aggregated stats
   app.get("/api/dashboard/stats", async () => {
     const pipelines = pipelineRepo.getAll();
@@ -104,6 +144,20 @@ export function registerPipelineRoutes(app: FastifyInstance) {
     }
   );
 
+  // List archived pipelines (failed/cancelled) for a project
+  app.get<{ Querystring: { projectId: string } }>(
+    "/api/pipelines/archived",
+    async (req, reply) => {
+      if (!req.query.projectId) {
+        return reply.code(400).send({ error: "projectId is required" });
+      }
+      const pipelines = pipelineRepo
+        .getByProject(req.query.projectId)
+        .filter((p) => p.state === "failed" || p.state === "cancelled");
+      return { data: pipelines };
+    }
+  );
+
   // Get pipeline detail
   app.get<{ Params: { id: string } }>(
     "/api/pipelines/:id",
@@ -170,6 +224,54 @@ export function registerPipelineRoutes(app: FastifyInstance) {
       }
       await pipelineEngine.cancel(pipeline.id);
       return { data: { message: "Pipeline cancelled" } };
+    }
+  );
+
+  // Retry an archived pipeline by cloning requirements into a new pipeline
+  app.post<{ Params: { id: string } }>(
+    "/api/pipelines/:id/retry",
+    async (req, reply) => {
+      const source = pipelineRepo.getById(req.params.id);
+      if (!source) {
+        return reply.code(404).send({ error: "Pipeline not found" });
+      }
+      if (source.state !== "failed" && source.state !== "cancelled") {
+        return reply.code(400).send({ error: "Only failed/cancelled pipelines can be retried" });
+      }
+
+      const next = pipelineRepo.create({
+        projectId: source.projectId,
+        requirements: source.requirements,
+      });
+
+      broadcaster.broadcastToProject(next.projectId, {
+        type: "pipeline:created",
+        pipeline: next as Pipeline,
+      });
+
+      pipelineEngine.start(next.id).catch((err) => {
+        app.log.error({ pipelineId: next.id, error: err.message }, "Pipeline retry start failed");
+      });
+
+      return { data: next };
+    }
+  );
+
+  // Hard-delete an archived pipeline and all related records
+  app.delete<{ Params: { id: string } }>(
+    "/api/pipelines/:id",
+    async (req, reply) => {
+      const pipeline = pipelineRepo.getById(req.params.id);
+      if (!pipeline) {
+        return reply.code(404).send({ error: "Pipeline not found" });
+      }
+      if (pipeline.state !== "failed" && pipeline.state !== "cancelled") {
+        return reply.code(400).send({ error: "Only failed/cancelled pipelines can be deleted" });
+      }
+
+      await hardDeletePipeline(pipeline.id);
+
+      return { data: { success: true } };
     }
   );
 

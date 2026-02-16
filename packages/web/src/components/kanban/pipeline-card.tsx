@@ -54,9 +54,9 @@ export function PipelineCard({
   const stateLabels: Record<string, string> = {
     requirements_input: "INPUT",
     plan_generation: "PLANNING",
-    human_review: "REVIEW",
-    adversarial_review: "ADVERSARIAL",
-    context_prep: "CONTEXT",
+    human_review: "PLANNING",
+    adversarial_review: "PLANNING",
+    context_prep: "PLANNING",
     parallel_execution: "EXECUTING",
     testing: "TESTING",
     code_review: "REVIEWING",

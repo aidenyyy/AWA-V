@@ -1,4 +1,4 @@
-import { DEFAULTS, REPLAN_LIMIT } from "@awa-v/shared";
+import { DEFAULTS } from "@awa-v/shared";
 import pino from "pino";
 
 const log = pino({ name: "self-healing" });
@@ -16,9 +16,9 @@ interface FailureRecord {
 
 /**
  * Provides basic self-healing capabilities for the pipeline:
- * - Retry on crash (up to SELF_HEAL_RETRY_LIMIT times)
+ * - Retry on crash (up to MAX_STAGE_RETRIES times)
  * - Timeout detection
- * - Trigger replan on repeated failures
+ * - Fail fast after retries are exhausted
  */
 export class SelfHealer {
   /** pipelineId -> list of failure records */
@@ -27,22 +27,22 @@ export class SelfHealer {
   /** pipelineId -> active timeout handles */
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
-  private readonly retryLimit = DEFAULTS.SELF_HEAL_RETRY_LIMIT; // 2
+  // User policy: any stage retry beyond 3 attempts should fail fast.
+  private readonly retryLimit = 3;
   private readonly timeoutMs = DEFAULTS.TASK_TIMEOUT_MS; // 10 minutes
 
   /**
-   * Record a failure and determine whether to retry, replan, or give up.
+   * Record a failure and determine whether to retry or fail fast.
    *
    * Returns:
    * - "retry"   if the failure count for this stage is within retry limits
-   * - "replan"  if retries are exhausted but replan limit isn't reached
-   * - "fatal"   if replan limit is also exceeded
+   * - "fatal"   if retries are exhausted
    */
   handleFailure(
     pipelineId: string,
     stageType: string,
     error: string
-  ): "retry" | "replan" | "fatal" {
+  ): "retry" | "fatal" {
     const records = this.failures.get(pipelineId) ?? [];
 
     // Count previous failures for this specific stage
@@ -72,50 +72,11 @@ export class SelfHealer {
       return "retry";
     }
 
-    // Retries exhausted; check if we should trigger a replan
-    if (this.shouldReplan(pipelineId)) {
-      log.info({ pipelineId, stageType }, "Retries exhausted, triggering replan");
-      return "replan";
-    }
-
-    // Replan limit also exceeded
     log.error(
       { pipelineId, stageType },
-      "All retries and replans exhausted; fatal failure"
+      "Retries exhausted; failing fast"
     );
     return "fatal";
-  }
-
-  /**
-   * Determine whether a replan is still allowed for this pipeline.
-   * Counts the number of distinct replan cycles (times we went back to
-   * plan_generation after failures).
-   */
-  shouldReplan(pipelineId: string): boolean {
-    const records = this.failures.get(pipelineId) ?? [];
-
-    // Count distinct replan events: each time retries were exhausted for a stage
-    const replanEvents = new Set<string>();
-    const stageCounts = new Map<string, number>();
-
-    for (const record of records) {
-      const count = (stageCounts.get(record.stageType) ?? 0) + 1;
-      stageCounts.set(record.stageType, count);
-
-      if (count > this.retryLimit) {
-        replanEvents.add(`${record.stageType}-${Math.floor(count / (this.retryLimit + 1))}`);
-      }
-    }
-
-    const replanCount = replanEvents.size;
-    const canReplan = replanCount < REPLAN_LIMIT;
-
-    log.info(
-      { pipelineId, replanCount, replanLimit: REPLAN_LIMIT, canReplan },
-      "Replan check"
-    );
-
-    return canReplan;
   }
 
   /**
