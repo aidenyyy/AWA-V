@@ -124,6 +124,7 @@ class MergeManager {
       const proc = processManager.spawn(session.id, {
         prompt: resolvePrompt,
         cwd: repoPath,
+        pipelineId,
         model: "haiku",
         permissionMode: "auto",
         systemPrompt: "You are a git merge conflict resolver. Resolve conflicts cleanly and commit.",

@@ -1,20 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE="${1:-dev}"
+echo "Starting AWA-V (dev mode)..."
 
-echo "Starting AWA-V ($MODE mode)..."
-
-if [ "$MODE" = "self" ]; then
-  # Self-iteration mode: no file watching, immune to source changes
-  echo ">> Self-iteration mode: server won't restart on file changes"
-  pnpm --filter @awa-v/agent-server start &
-  AGENT_PID=$!
-else
-  # Development mode: hot-reload on file changes
-  pnpm --filter @awa-v/agent-server dev &
-  AGENT_PID=$!
-fi
+pnpm --filter @awa-v/agent-server dev &
+AGENT_PID=$!
 
 pnpm --filter @awa-v/web dev &
 WEB_PID=$!

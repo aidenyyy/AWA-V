@@ -83,27 +83,51 @@ class SkillDistributor {
 
     const matchedTags = this.getMatchingTags(taskType, taskDomain);
 
-    if (matchedTags.length === 0) {
-      log.debug({ taskType, taskDomain }, "No matching rules found");
-      return { skills: [], pluginDirs: [], claudeMdSnippets: [] };
-    }
-
     // Query skills from the registry that match any of the resolved tags
-    const matchedSkills = skillRepo.getByTags(matchedTags)
-      .filter((s) => s.status === "active");
+    const tagMatchedSkills = matchedTags.length > 0
+      ? skillRepo.getByTags(matchedTags).filter((s) => s.status === "active")
+      : [];
+
+    // Always include starred active skills, regardless of tag matching
+    const starredSkills = skillRepo.getAll()
+      .filter((s) => s.starred === 1 && s.status === "active");
+
+    // Merge: starred first (deduplicated), then tag-matched
+    const seenIds = new Set<string>();
+    const mergedSkills: typeof tagMatchedSkills = [];
+
+    for (const skill of starredSkills) {
+      if (!seenIds.has(skill.id)) {
+        seenIds.add(skill.id);
+        mergedSkills.push(skill);
+      }
+    }
+    for (const skill of tagMatchedSkills) {
+      if (!seenIds.has(skill.id)) {
+        seenIds.add(skill.id);
+        mergedSkills.push(skill);
+      }
+    }
 
     // Build the skill pack
     const pluginDirs: string[] = [];
     const claudeMdSnippets: string[] = [];
 
-    for (const skill of matchedSkills) {
-      // Skills with a sourceUrl that looks like a directory path are plugin dirs
-      if (skill.sourceUrl && !skill.sourceUrl.startsWith("http")) {
+    for (const skill of mergedSkills) {
+      // Skills with a pluginDir set get added as plugin directories
+      if (skill.pluginDir) {
+        pluginDirs.push(skill.pluginDir);
+      } else if (skill.sourceUrl && !skill.sourceUrl.startsWith("http")) {
+        // Legacy: sourceUrl that looks like a directory path
         pluginDirs.push(skill.sourceUrl);
       }
 
-      // Use the skill description as a CLAUDE.md snippet
-      if (skill.description) {
+      // Use skill instructions (preferred) or description as CLAUDE.md snippet
+      if (skill.instructions) {
+        claudeMdSnippets.push(
+          `### Skill: ${skill.name}\n${skill.instructions}`
+        );
+      } else if (skill.description) {
         claudeMdSnippets.push(
           `### Skill: ${skill.name}\n${skill.description}`
         );
@@ -115,13 +139,14 @@ class SkillDistributor {
         taskType,
         taskDomain,
         matchedTags,
-        skillCount: matchedSkills.length,
+        skillCount: mergedSkills.length,
+        starredCount: starredSkills.length,
       },
       "Skill pack assembled"
     );
 
     return {
-      skills: matchedSkills as Skill[],
+      skills: mergedSkills as Skill[],
       pluginDirs,
       claudeMdSnippets,
     };
@@ -198,19 +223,36 @@ class SkillDistributor {
     // Deduplicate tags
     const uniqueTags = [...new Set(inferredTags)];
 
-    if (uniqueTags.length === 0) {
-      return [];
+    const tagMatched = uniqueTags.length > 0
+      ? skillRepo.getByTags(uniqueTags).filter((s) => s.status === "active")
+      : [];
+
+    // Always include starred active skills, prioritized first
+    const starredSkills = skillRepo.getAll()
+      .filter((s) => s.starred === 1 && s.status === "active");
+
+    const seenIds = new Set<string>();
+    const merged: typeof tagMatched = [];
+
+    for (const skill of starredSkills) {
+      if (!seenIds.has(skill.id)) {
+        seenIds.add(skill.id);
+        merged.push(skill);
+      }
+    }
+    for (const skill of tagMatched) {
+      if (!seenIds.has(skill.id)) {
+        seenIds.add(skill.id);
+        merged.push(skill);
+      }
     }
 
-    const skills = skillRepo.getByTags(uniqueTags)
-      .filter((s) => s.status === "active");
-
     log.debug(
-      { description: taskDescription.slice(0, 100), inferredTags: uniqueTags, skillCount: skills.length },
+      { description: taskDescription.slice(0, 100), inferredTags: uniqueTags, skillCount: merged.length, starredCount: starredSkills.length },
       "Recommended skills from description"
     );
 
-    return skills as Skill[];
+    return merged as Skill[];
   }
 
   /**

@@ -1,23 +1,31 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import { evolutionRepo } from "../db/repositories/evolution-repo.js";
 import { memoryRepo } from "../db/repositories/memory-repo.js";
+import { consultationRepo } from "../db/repositories/consultation-repo.js";
 import { pipelineRepo } from "../db/repositories/pipeline-repo.js";
 import { projectRepo } from "../db/repositories/project-repo.js";
-import { taskRepo } from "../db/repositories/task-repo.js";
+import { taskRepo, stageRepo } from "../db/repositories/task-repo.js";
 import { processManager } from "../claude/process-manager.js";
-import { commitManager } from "../git/commit-manager.js";
+import { modelRouter } from "./model-router.js";
+import { interventionManager } from "./intervention-manager.js";
 import { EVOLUTION_ANALYST_PROMPT } from "../prompts/evolution-analyst.js";
-import type { StreamChunk } from "@awa-v/shared";
+import {
+  DEFAULTS,
+  COMPLEXITY_MODEL_MAP,
+  STAGE_MODEL_MAP,
+} from "@awa-v/shared";
+import type { StreamChunk, ModelTier, ModelId } from "@awa-v/shared";
+import {
+  modelPerformanceRepo,
+} from "../db/repositories/model-performance-repo.js";
 import pino from "pino";
 
 const log = pino({ name: "evolution-engine" });
 
 /**
- * Evolution Engine — Claude-powered analysis + CLAUDE.md writes.
+ * Evolution Engine — Claude-powered analysis + backend strategy updates.
  *
  * Captures structured metrics from pipeline executions, calls Claude
- * to identify patterns, and applies recommendations by modifying CLAUDE.md.
+ * to identify patterns, and applies recommendations to backend-managed state.
  */
 class EvolutionEngine {
   /**
@@ -37,6 +45,32 @@ class EvolutionEngine {
     const failedTasks = tasks.filter((t) => t.state === "failed");
     const completedTasks = tasks.filter((t) => t.state === "completed");
 
+    // Consultation pattern metrics
+    const allConsultations = consultationRepo.getByPipeline(pipelineId);
+    const consultCount = allConsultations.filter((c) => !c.blocking).length;
+    const blockCount = allConsultations.filter((c) => c.blocking).length;
+    const answeredBeforeCompletion = allConsultations.filter(
+      (c) => c.status === "answered"
+    ).length;
+    const expiredCount = allConsultations.filter(
+      (c) => c.status === "expired"
+    ).length;
+
+    // Churn metrics from code review quality gate
+    const codeReviewStages = stageRepo
+      .getByPipeline(pipelineId)
+      .filter((s) => s.type === "code_review" && s.qualityGateResult);
+
+    let churnMetrics = null;
+    if (codeReviewStages.length > 0) {
+      try {
+        const result = JSON.parse(codeReviewStages[0].qualityGateResult!);
+        churnMetrics = result.churnMetrics ?? null;
+      } catch {
+        // ignore parse errors
+      }
+    }
+
     const metrics = {
       pipelineId,
       projectId: pipeline.projectId,
@@ -49,6 +83,13 @@ class EvolutionEngine {
       failedTaskCount: failedTasks.length,
       completedTaskCount: completedTasks.length,
       failedTaskRoles: failedTasks.map((t) => t.agentRole),
+      consultationMetrics: {
+        consultCount,
+        blockCount,
+        answeredBeforeCompletion,
+        expiredCount,
+      },
+      churnMetrics,
       capturedAt: new Date().toISOString(),
     };
 
@@ -108,6 +149,9 @@ class EvolutionEngine {
     const errorMemories = memories.filter((m) => m.type === "error");
     const patternMemories = memories.filter((m) => m.type === "pattern" && m.layer === "L1");
 
+    // Include model performance stats
+    const modelStats = modelRouter.getStats(projectId);
+
     const analysisInput = {
       totalPipelines: pipelines.length,
       completedCount: completedPipelines.length,
@@ -122,6 +166,14 @@ class EvolutionEngine {
         reentryCount: p.reentryCount,
         costUsd: p.totalCostUsd,
         tokens: p.totalInputTokens + p.totalOutputTokens,
+      })),
+      modelPerformance: modelStats.map((s) => ({
+        taskType: s.taskType,
+        complexity: s.complexity,
+        model: s.model,
+        successRate: s.successRate,
+        totalRuns: s.totalRuns,
+        avgTokens: s.avgTokens,
       })),
     };
 
@@ -158,11 +210,68 @@ class EvolutionEngine {
   }
 
   /**
-   * Apply recommendations by writing to CLAUDE.md and/or updating config.
+   * Select the best model for a task, checking evolution-driven overrides first.
+   * Replaces ModelRouter.selectModel() as the single source of model decisions.
+   */
+  selectModel(
+    projectId: string,
+    stageType: string,
+    agentRole: string,
+    complexity: ModelTier
+  ): ModelId {
+    const project = projectRepo.getById(projectId);
+    const overrides = JSON.parse(project?.modelOverrides ?? "{}") as {
+      stageModels?: Record<string, ModelId>;
+      roleModels?: Record<string, ModelId>;
+    };
+
+    // 1. Check evolution-driven role:complexity override
+    const roleKey = `${agentRole}:${complexity}`;
+    if (overrides.roleModels?.[roleKey]) {
+      log.debug(
+        { projectId, agentRole, complexity, model: overrides.roleModels[roleKey], reason: "evolution-role-override" },
+        "Using evolution role override"
+      );
+      return overrides.roleModels[roleKey];
+    }
+
+    // 2. Check evolution-driven stage override
+    if (overrides.stageModels?.[stageType]) {
+      log.debug(
+        { projectId, stageType, model: overrides.stageModels[stageType], reason: "evolution-stage-override" },
+        "Using evolution stage override"
+      );
+      return overrides.stageModels[stageType];
+    }
+
+    // 3. Data-driven routing: check historical performance
+    const defaultModel = COMPLEXITY_MODEL_MAP[complexity];
+    const stats = modelPerformanceRepo.getStatsForCombo(projectId, agentRole, complexity);
+    const totalRuns = stats.reduce((sum, s) => sum + s.totalRuns, 0);
+
+    if (totalRuns >= DEFAULTS.MODEL_ROUTER_MIN_SAMPLES) {
+      const defaultStats = stats.find((s) => s.model === defaultModel);
+      if (defaultStats && defaultStats.successRate < DEFAULTS.MODEL_UPGRADE_THRESHOLD) {
+        const upgraded = this.upgradeModel(defaultModel);
+        log.info(
+          { projectId, agentRole, complexity, from: defaultModel, to: upgraded, successRate: defaultStats.successRate },
+          "Upgrading model due to low success rate"
+        );
+        return upgraded;
+      }
+    }
+
+    // 4. Default mapping: stage → complexity → project
+    return STAGE_MODEL_MAP[stageType] ?? COMPLEXITY_MODEL_MAP[complexity] ?? (project?.model as ModelId) ?? "sonnet";
+  }
+
+  /**
+   * Apply recommendations by updating config, adjusting model routing, and recording insights.
    */
   async applyRecommendations(
     projectId: string,
-    recommendations: EvolutionRecommendation[]
+    recommendations: EvolutionRecommendation[],
+    triggerPipelineId?: string
   ): Promise<void> {
     log.info(
       { projectId, count: recommendations.length },
@@ -176,53 +285,19 @@ class EvolutionEngine {
     }
 
     for (const rec of recommendations) {
-      if (rec.type === "claude_md_update" && rec.diff) {
-        // Actually write to CLAUDE.md
-        const claudeMdPath = join(project.repoPath, "CLAUDE.md");
-        try {
-          const existing = existsSync(claudeMdPath)
-            ? readFileSync(claudeMdPath, "utf-8")
-            : "";
-
-          const separator = "\n\n<!-- AWA-V Evolution -->\n";
-          const updated = existing + separator + rec.diff;
-          writeFileSync(claudeMdPath, updated);
-
-          // Commit the change
-          try {
-            commitManager.commit(
-              project.repoPath,
-              `evolution: ${rec.description.slice(0, 72)}`
-            );
-          } catch {
-            // Commit may fail if working tree is dirty from other operations
-            log.warn({ projectId }, "Could not commit CLAUDE.md evolution update");
-          }
-
-          // Record in evolution_logs
-          evolutionRepo.create({
-            projectId,
-            patternDescription: rec.description,
-            actionType: "claude_md_update",
-            diff: rec.diff,
-          });
-
-          log.info(
-            { projectId, description: rec.description },
-            "CLAUDE.md updated with evolution recommendation"
-          );
-        } catch (err) {
-          log.error(
-            { projectId, error: (err as Error).message },
-            "Failed to update CLAUDE.md"
-          );
-        }
+      if (rec.type === "config_change" && rec.configChanges) {
+        // Config changes require user approval via intervention
+        await this.applyConfigChange(projectId, rec, triggerPipelineId);
+      } else if (rec.type === "model_routing" && rec.configChanges) {
+        // Model routing changes are data-driven and low-risk — apply automatically
+        this.applyModelRouting(projectId, project, rec, triggerPipelineId);
       } else {
-        // Non-file recommendations: just record them
+        // Non-actionable recommendations: just record them
         evolutionRepo.create({
           projectId,
+          triggerPipelineId,
           patternDescription: rec.description,
-          actionType: rec.type === "claude_md_update" ? "claude_md_update" : "config_change",
+          actionType: rec.type,
           diff: JSON.stringify(rec),
         });
 
@@ -231,6 +306,159 @@ class EvolutionEngine {
           "Recommendation recorded"
         );
       }
+    }
+  }
+
+  // ─── Private: config_change with intervention approval ───────
+
+  private async applyConfigChange(
+    projectId: string,
+    rec: EvolutionRecommendation,
+    triggerPipelineId?: string
+  ): Promise<void> {
+    const project = projectRepo.getById(projectId);
+    if (!project || !rec.configChanges) return;
+
+    // Store pre-change state for rollback
+    const previousValues: Record<string, unknown> = {};
+    for (const key of Object.keys(rec.configChanges)) {
+      if (key === "model" || key === "maxBudgetUsd") {
+        previousValues[key] = (project as Record<string, unknown>)[key];
+      }
+    }
+
+    if (!triggerPipelineId) {
+      // No pipeline context — can't request intervention, just record
+      evolutionRepo.create({
+        projectId,
+        triggerPipelineId,
+        patternDescription: rec.description,
+        actionType: "config_change",
+        diff: JSON.stringify({ applied: false, noInterventionContext: true, changes: rec.configChanges }),
+      });
+      log.info({ projectId, type: rec.type }, "Config change recorded (no pipeline for intervention)");
+      return;
+    }
+
+    // Request user approval via intervention system
+    const response = await interventionManager.requestIntervention({
+      pipelineId: triggerPipelineId,
+      stageType: "evolution_config",
+      question: `Evolution recommends: ${rec.description}. Apply this change?`,
+      context: {
+        recommendation: rec,
+        currentValues: previousValues,
+        proposedValues: rec.configChanges,
+      },
+    });
+
+    if (response === "approve" || response === "proceed") {
+      // Apply the changes
+      const updateData: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(rec.configChanges)) {
+        if (key === "model" || key === "maxBudgetUsd") {
+          updateData[key] = value;
+        }
+      }
+
+      if (Object.keys(updateData).length > 0) {
+        projectRepo.update(projectId, updateData as { model?: string; maxBudgetUsd?: number });
+      }
+
+      // Record with rollback data
+      evolutionRepo.create({
+        projectId,
+        triggerPipelineId,
+        patternDescription: rec.description,
+        actionType: "config_change",
+        diff: JSON.stringify({
+          applied: true,
+          changes: rec.configChanges,
+          previousValues,
+        }),
+      });
+
+      log.info(
+        { projectId, description: rec.description, changes: updateData },
+        "Config change applied after user approval"
+      );
+    } else {
+      // Record as rejected
+      evolutionRepo.create({
+        projectId,
+        triggerPipelineId,
+        patternDescription: rec.description,
+        actionType: "config_change",
+        diff: JSON.stringify({ applied: false, rejected: true, changes: rec.configChanges }),
+      });
+
+      log.info(
+        { projectId, description: rec.description },
+        "Config change rejected by user"
+      );
+    }
+  }
+
+  // ─── Private: model_routing auto-apply (no intervention) ────
+
+  private applyModelRouting(
+    projectId: string,
+    project: { modelOverrides: string },
+    rec: EvolutionRecommendation,
+    triggerPipelineId?: string
+  ): void {
+    if (!rec.configChanges) return;
+
+    const overrides = JSON.parse(project.modelOverrides ?? "{}") as {
+      stageModels?: Record<string, string>;
+      roleModels?: Record<string, string>;
+    };
+    const previousOverrides = JSON.stringify(overrides);
+
+    // Merge new routing rules
+    if (rec.configChanges.stageModelOverrides && typeof rec.configChanges.stageModelOverrides === "object") {
+      overrides.stageModels = {
+        ...overrides.stageModels,
+        ...(rec.configChanges.stageModelOverrides as Record<string, string>),
+      };
+    }
+    if (rec.configChanges.modelRouting && typeof rec.configChanges.modelRouting === "object") {
+      overrides.roleModels = {
+        ...overrides.roleModels,
+        ...(rec.configChanges.modelRouting as Record<string, string>),
+      };
+    }
+
+    projectRepo.update(projectId, { modelOverrides: JSON.stringify(overrides) });
+
+    evolutionRepo.create({
+      projectId,
+      triggerPipelineId,
+      patternDescription: rec.description,
+      actionType: "model_routing",
+      diff: JSON.stringify({
+        applied: true,
+        changes: overrides,
+        previousValues: previousOverrides,
+      }),
+    });
+
+    log.info(
+      { projectId, description: rec.description, overrides },
+      "Model routing updated automatically"
+    );
+  }
+
+  // ─── Private: model upgrade helper ─────────────────────────
+
+  private upgradeModel(current: ModelId): ModelId {
+    switch (current) {
+      case "haiku":
+        return "sonnet";
+      case "sonnet":
+        return "opus";
+      case "opus":
+        return "opus";
     }
   }
 
@@ -308,15 +536,23 @@ class EvolutionEngine {
       })
     );
 
+    const validTypes = ["config_change", "model_routing", "skill_suggestion", "prompt_improvement"];
     const recommendations: EvolutionRecommendation[] = (
       parsed.recommendations ?? []
-    ).map((r: Record<string, unknown>) => ({
-      type: String(r.type ?? "claude_md_update"),
-      description: String(r.description ?? ""),
-      rationale: String(r.rationale ?? ""),
-      priority: String(r.priority ?? "medium") as "high" | "medium" | "low",
-      diff: r.diff ? String(r.diff) : undefined,
-    }));
+    ).map((r: Record<string, unknown>) => {
+      const rawType = String(r.type ?? "prompt_improvement");
+      const type = validTypes.includes(rawType) ? rawType : "prompt_improvement";
+      return {
+        type: type as EvolutionRecommendation["type"],
+        description: String(r.description ?? ""),
+        rationale: String(r.rationale ?? ""),
+        priority: String(r.priority ?? "medium") as "high" | "medium" | "low",
+        diff: r.diff ? String(r.diff) : undefined,
+        configChanges: r.configChanges && typeof r.configChanges === "object"
+          ? (r.configChanges as Record<string, unknown>)
+          : undefined,
+      };
+    });
 
     return {
       patterns,
@@ -377,7 +613,7 @@ class EvolutionEngine {
     if (avgCostUsd > 5) {
       patterns.push({
         type: "efficiency",
-        description: `Average pipeline cost is $${avgCostUsd.toFixed(2)}, which is above target.`,
+        description: `Average pipeline cost is high (${avgCostUsd.toFixed(2)} USD equivalent), which is above target.`,
         frequency: "per pipeline",
         impact: "medium",
       });
@@ -385,11 +621,10 @@ class EvolutionEngine {
 
     if (errorMemoryCount > 5) {
       recommendations.push({
-        type: "claude_md_update",
-        description: "Document common error patterns and workarounds in CLAUDE.md.",
-        rationale: `${errorMemoryCount} error memories found. Documenting patterns can prevent recurrence.`,
+        type: "prompt_improvement",
+        description: "Document common error patterns in backend evolution logs for future routing decisions.",
+        rationale: `${errorMemoryCount} error memories found. Recording patterns can prevent recurrence.`,
         priority: "medium",
-        diff: "## Known Error Patterns\n\n_Auto-generated by AWA-V Evolution Engine. Review and refine these patterns._\n",
       });
     }
 
@@ -411,11 +646,12 @@ export interface EvolutionPattern {
 }
 
 export interface EvolutionRecommendation {
-  type: "claude_md_update" | "config_change" | "skill_suggestion" | "prompt_improvement";
+  type: "config_change" | "model_routing" | "skill_suggestion" | "prompt_improvement";
   description: string;
   rationale: string;
   priority: "high" | "medium" | "low";
   diff?: string;
+  configChanges?: Record<string, unknown>;
 }
 
 export interface EvolutionAnalysis {

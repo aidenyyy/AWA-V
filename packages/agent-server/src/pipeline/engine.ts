@@ -1,11 +1,15 @@
+import { existsSync } from "node:fs";
 import {
   PipelineState,
   HumanReviewDecision,
   REPLAN_LIMIT,
   DEFAULTS,
+  StageState,
+  TaskState,
 } from "@awa-v/shared";
 import type { Pipeline } from "@awa-v/shared";
 import { pipelineRepo } from "../db/repositories/pipeline-repo.js";
+import { projectRepo } from "../db/repositories/project-repo.js";
 import { broadcaster } from "../ws/broadcaster.js";
 import {
   getNextState,
@@ -16,6 +20,8 @@ import {
 import { runStage, type StageResult } from "./stage-runner.js";
 import { costTracker } from "./cost-tracker.js";
 import { selfHealer } from "./self-healing.js";
+import { worktreeManager } from "../git/worktree-manager.js";
+import { processManager } from "../claude/process-manager.js";
 import pino from "pino";
 
 const log = pino({ name: "pipeline-engine" });
@@ -40,6 +46,15 @@ class PipelineEngine {
     }
 
     log.info({ pipelineId }, "Starting pipeline");
+
+    // Self-repo: create dedicated staging worktree for this pipeline
+    const project = projectRepo.getById(pipeline.projectId);
+    if (project?.isSelfRepo) {
+      const branchName = `awa-v/self/${pipelineId.slice(0, 8)}`;
+      const worktreePath = worktreeManager.createWorktree(project.repoPath, branchName);
+      pipelineRepo.update(pipelineId, { selfWorktreePath: worktreePath });
+      log.info({ pipelineId, worktreePath, branchName }, "Created self-repo staging worktree");
+    }
 
     // Run the requirements_input stage (auto-pass) and advance
     await this.runCurrentStageAndAdvance(pipelineId, PipelineState.REQUIREMENTS_INPUT);
@@ -96,11 +111,19 @@ class PipelineEngine {
     const newReentryCount = pipeline.reentryCount + 1;
 
     if (newReentryCount > REPLAN_LIMIT) {
+      // Include the last stage error so the user sees the root cause
+      const failures = selfHealer.getFailures(pipelineId);
+      const lastError = failures.length > 0
+        ? failures[failures.length - 1].error
+        : undefined;
+      const reason = lastError
+        ? `Replan limit exceeded. Last error: ${lastError}`
+        : "Replan limit exceeded";
       log.error(
-        { pipelineId, reentryCount: newReentryCount, limit: REPLAN_LIMIT },
+        { pipelineId, reentryCount: newReentryCount, limit: REPLAN_LIMIT, lastError },
         "Replan limit exceeded; failing pipeline"
       );
-      await this.failPipeline(pipelineId, "Replan limit exceeded");
+      await this.failPipeline(pipelineId, reason);
       return;
     }
 
@@ -108,6 +131,40 @@ class PipelineEngine {
       { pipelineId, reentryCount: newReentryCount },
       "Replanning pipeline"
     );
+
+    // Ensure no in-flight task continues writing while we rebuild the plan.
+    processManager.killByPipeline(pipelineId);
+
+    // Cancel unfinished tasks from previous attempts so only the new plan executes.
+    const { stageRepo, taskRepo } = await import("../db/repositories/task-repo.js");
+    const existingStages = stageRepo.getByPipeline(pipelineId);
+    const now = new Date().toISOString();
+    for (const task of existingStages.flatMap((s) => taskRepo.getByStage(s.id))) {
+      if (
+        task.state === TaskState.PENDING ||
+        task.state === TaskState.QUEUED ||
+        task.state === TaskState.RUNNING
+      ) {
+        taskRepo.update(task.id, {
+          state: TaskState.CANCELLED,
+          resultSummary: "Cancelled due to replan",
+        });
+      }
+    }
+
+    // Mark incomplete parallel execution stages as non-active to avoid stale reuse.
+    for (const stage of existingStages) {
+      if (
+        stage.type === PipelineState.PARALLEL_EXECUTION &&
+        (stage.state === StageState.PENDING || stage.state === StageState.RUNNING)
+      ) {
+        stageRepo.update(stage.id, {
+          state: stage.state === StageState.RUNNING ? StageState.FAILED : StageState.SKIPPED,
+          completedAt: now,
+          errorMessage: "Replanned",
+        });
+      }
+    }
 
     // Update reentry count
     pipelineRepo.update(pipelineId, { reentryCount: newReentryCount });
@@ -117,7 +174,8 @@ class PipelineEngine {
   }
 
   /**
-   * Cancel a pipeline: set state to cancelled.
+   * Cancel a pipeline with full cleanup: kill processes, clean worktrees,
+   * expire consultations, remove forged tools, mark stages/tasks cancelled.
    */
   async cancel(pipelineId: string): Promise<void> {
     const pipeline = pipelineRepo.getById(pipelineId);
@@ -133,15 +191,241 @@ class PipelineEngine {
       return;
     }
 
-    log.info({ pipelineId }, "Cancelling pipeline");
+    log.info({ pipelineId }, "Cancelling pipeline with full cleanup");
 
+    // 1. Kill all active Claude processes for this pipeline
+    processManager.killByPipeline(pipelineId);
+
+    // 2. Mark all running/pending stages as cancelled
+    const { stageRepo, taskRepo } = await import("../db/repositories/task-repo.js");
+    const stages = stageRepo.getByPipeline(pipelineId);
+    for (const stage of stages) {
+      if (stage.state === StageState.RUNNING || stage.state === StageState.PENDING) {
+        const updateData: { state: string; completedAt: string; errorMessage?: string } = {
+          state: stage.state === StageState.RUNNING ? "failed" : "skipped",
+          completedAt: new Date().toISOString(),
+        };
+        if (stage.state === StageState.RUNNING) {
+          updateData.errorMessage = "Pipeline cancelled";
+        }
+        stageRepo.update(stage.id, updateData);
+      }
+    }
+
+    // 3. Mark all running/pending tasks as cancelled
+    const tasks = stages.flatMap(s => taskRepo.getByStage(s.id));
+    for (const task of tasks) {
+      if (task.state === TaskState.RUNNING || task.state === TaskState.PENDING || task.state === TaskState.QUEUED) {
+        taskRepo.update(task.id, { state: TaskState.CANCELLED });
+      }
+    }
+
+    // 4. Clean up task worktrees
+    for (const task of tasks) {
+      if (task.worktreePath) {
+        try {
+          worktreeManager.removeWorktree(task.worktreePath);
+        } catch (err) {
+          log.warn({ taskId: task.id, error: (err as Error).message }, "Failed to remove task worktree during cancel");
+        }
+      }
+    }
+
+    // 5. Clean up self-repo worktree
+    if (pipeline.selfWorktreePath) {
+      try {
+        worktreeManager.removeWorktree(pipeline.selfWorktreePath);
+      } catch (err) {
+        log.warn({ pipelineId, error: (err as Error).message }, "Failed to remove self worktree during cancel");
+      }
+    }
+
+    // 6. Expire pending consultations
+    const { consultationManager } = await import("../services/consultation-manager.js");
+    consultationManager.expireForPipeline(pipelineId);
+
+    // 7. Cleanup forged tools
+    const { toolForge } = await import("../services/tool-forge.js");
+    toolForge.cleanup(pipelineId);
+
+    // 8. Clear self-healer state
+    selfHealer.clearFailures(pipelineId);
+
+    // 9. Aggregate final costs
+    await costTracker.aggregateAndUpdate(pipelineId);
+
+    // 10. Set pipeline state to cancelled
     const updated = pipelineRepo.update(pipelineId, {
       state: PipelineState.CANCELLED,
     });
 
-    selfHealer.clearFailures(pipelineId);
+    this.broadcastUpdate(pipelineId, updated!);
+  }
+
+  /**
+   * Pause a running pipeline: save current state, kill processes, set to paused.
+   */
+  async pause(pipelineId: string): Promise<void> {
+    const pipeline = pipelineRepo.getById(pipelineId);
+    if (!pipeline) {
+      throw new Error(`Pipeline not found: ${pipelineId}`);
+    }
+
+    const currentState = pipeline.state as PipelineState;
+
+    if (isTerminal(currentState) || currentState === PipelineState.PAUSED) {
+      log.info(
+        { pipelineId, state: currentState },
+        "Cannot pause: pipeline is in terminal or already paused state"
+      );
+      return;
+    }
+
+    log.info({ pipelineId, fromState: currentState }, "Pausing pipeline");
+
+    // Kill all active Claude processes for this pipeline
+    processManager.killByPipeline(pipelineId);
+
+    // Reset running tasks so resume can re-dispatch them deterministically.
+    const { stageRepo, taskRepo } = await import("../db/repositories/task-repo.js");
+    for (const stage of stageRepo.getByPipeline(pipelineId)) {
+      for (const task of taskRepo.getByStage(stage.id)) {
+        if (task.state === TaskState.RUNNING) {
+          taskRepo.update(task.id, {
+            state: TaskState.PENDING,
+            resultSummary: "Paused and reset to pending",
+          });
+        }
+      }
+    }
+
+    // Clear any self-healer timeouts
+    selfHealer.clearTimeout(pipelineId);
+
+    // Save current state and set to paused
+    const updated = pipelineRepo.update(pipelineId, {
+      state: PipelineState.PAUSED,
+      pausedFromState: currentState,
+    });
 
     this.broadcastUpdate(pipelineId, updated!);
+  }
+
+  /**
+   * Resume a paused pipeline: restore state and re-enter the FSM.
+   * Distinct from resume() which is for crash recovery.
+   */
+  async resumePaused(pipelineId: string): Promise<void> {
+    const pipeline = pipelineRepo.getById(pipelineId);
+    if (!pipeline) {
+      throw new Error(`Pipeline not found: ${pipelineId}`);
+    }
+
+    if (pipeline.state !== PipelineState.PAUSED) {
+      // Already resumed (by crash recovery or another call) — skip silently
+      log.info(
+        { pipelineId, state: pipeline.state },
+        "Pipeline is not paused — skipping resume"
+      );
+      return;
+    }
+
+    const restoreState = pipeline.pausedFromState as PipelineState;
+    if (!restoreState) {
+      throw new Error(`Pipeline ${pipelineId} has no pausedFromState to restore`);
+    }
+
+    log.info({ pipelineId, restoreState }, "Resuming paused pipeline");
+
+    // Restore the state and clear pausedFromState
+    const updated = pipelineRepo.update(pipelineId, {
+      state: restoreState,
+      pausedFromState: null,
+    });
+
+    this.broadcastUpdate(pipelineId, updated!);
+
+    // Re-enter the FSM at the restored state
+    await this.runCurrentStageAndAdvance(pipelineId, restoreState);
+  }
+
+  /**
+   * Resume a pipeline after a server crash/restart.
+   * Re-enters the FSM loop at the pipeline's current state.
+   */
+  async resume(pipelineId: string): Promise<void> {
+    const pipeline = pipelineRepo.getById(pipelineId);
+    if (!pipeline) {
+      log.warn({ pipelineId }, "Cannot resume: pipeline not found");
+      return;
+    }
+
+    let currentState = pipeline.state as PipelineState;
+
+    // Migrate deprecated prep states to unified context_prep on resume.
+    if (
+      currentState === PipelineState.SKILL_DISTRIBUTION ||
+      currentState === PipelineState.MEMORY_INJECTION
+    ) {
+      const updated = pipelineRepo.update(pipelineId, {
+        state: PipelineState.CONTEXT_PREP,
+      });
+      if (updated) {
+        this.broadcastUpdate(pipelineId, updated);
+      }
+      currentState = PipelineState.CONTEXT_PREP;
+    }
+
+    if (isTerminal(currentState)) {
+      log.warn(
+        { pipelineId, state: currentState },
+        "Cannot resume: pipeline is in terminal state"
+      );
+      return;
+    }
+
+    // Paused pipelines: use resumePaused() flow
+    if (currentState === PipelineState.PAUSED) {
+      await this.resumePaused(pipelineId);
+      return;
+    }
+
+    // Intervention stages: re-park via the intervention manager
+    if (
+      currentState === PipelineState.HUMAN_REVIEW
+    ) {
+      log.info(
+        { pipelineId, state: currentState },
+        "Resuming pipeline in intervention stage — re-parking"
+      );
+      const { interventionManager } = await import(
+        "../services/intervention-manager.js"
+      );
+      await interventionManager.reParkIntervention(pipelineId, currentState);
+      return;
+    }
+
+    // Self-repo: ensure staging worktree exists (may have been lost on restart)
+    if (pipeline.selfWorktreePath && !existsSync(pipeline.selfWorktreePath)) {
+      const project = projectRepo.getById(pipeline.projectId);
+      if (project) {
+        const branchName = `awa-v/self/${pipelineId.slice(0, 8)}`;
+        try {
+          const worktreePath = worktreeManager.createWorktree(project.repoPath, branchName);
+          pipelineRepo.update(pipelineId, { selfWorktreePath: worktreePath });
+          log.info({ pipelineId, worktreePath }, "Recreated self-repo staging worktree on resume");
+        } catch (err) {
+          log.error({ pipelineId, error: (err as Error).message }, "Failed to recreate self-repo worktree");
+        }
+      }
+    }
+
+    log.info(
+      { pipelineId, state: currentState },
+      "Resuming pipeline from current stage"
+    );
+
+    await this.runCurrentStageAndAdvance(pipelineId, currentState);
   }
 
   /**
@@ -214,6 +498,14 @@ class PipelineEngine {
     if (isTerminal(newState)) {
       log.info({ pipelineId, state: newState }, "Pipeline reached terminal state");
       selfHealer.clearFailures(pipelineId);
+
+      // Expire pending consultations
+      const { consultationManager } = await import("../services/consultation-manager.js");
+      consultationManager.expireForPipeline(pipelineId);
+
+      // Cleanup forged tools
+      const { toolForge } = await import("../services/tool-forge.js");
+      toolForge.cleanup(pipelineId);
 
       // Aggregate final costs
       await costTracker.aggregateAndUpdate(pipelineId);
@@ -298,6 +590,7 @@ class PipelineEngine {
     switch (action) {
       case "retry":
         log.info({ pipelineId, stageType }, "Retrying stage after failure");
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         await this.runCurrentStageAndAdvance(
           pipelineId,
           stageType as PipelineState
@@ -345,6 +638,7 @@ class PipelineEngine {
 
     const updated = pipelineRepo.update(pipelineId, {
       state: PipelineState.FAILED,
+      errorMessage: reason,
     });
 
     selfHealer.clearFailures(pipelineId);
@@ -389,6 +683,10 @@ class PipelineEngine {
     pipeline: NonNullable<ReturnType<typeof pipelineRepo.getById>>
   ): void {
     broadcaster.broadcastToPipeline(pipelineId, {
+      type: "pipeline:updated",
+      pipeline: pipeline as Pipeline,
+    });
+    broadcaster.broadcastToProject(pipeline.projectId, {
       type: "pipeline:updated",
       pipeline: pipeline as Pipeline,
     });

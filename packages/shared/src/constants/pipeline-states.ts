@@ -3,7 +3,10 @@ export const PipelineState = {
   PLAN_GENERATION: "plan_generation",
   HUMAN_REVIEW: "human_review",
   ADVERSARIAL_REVIEW: "adversarial_review",
+  CONTEXT_PREP: "context_prep",
+  // Deprecated: kept for backward compatibility with historical rows.
   SKILL_DISTRIBUTION: "skill_distribution",
+  // Deprecated: kept for backward compatibility with historical rows.
   MEMORY_INJECTION: "memory_injection",
   PARALLEL_EXECUTION: "parallel_execution",
   TESTING: "testing",
@@ -14,6 +17,7 @@ export const PipelineState = {
   COMPLETED: "completed",
   FAILED: "failed",
   CANCELLED: "cancelled",
+  PAUSED: "paused",
 } as const;
 
 export type PipelineState =
@@ -57,8 +61,7 @@ export const PIPELINE_STAGE_ORDER = [
   PipelineState.PLAN_GENERATION,
   PipelineState.HUMAN_REVIEW,
   PipelineState.ADVERSARIAL_REVIEW,
-  PipelineState.SKILL_DISTRIBUTION,
-  PipelineState.MEMORY_INJECTION,
+  PipelineState.CONTEXT_PREP,
   PipelineState.PARALLEL_EXECUTION,
   PipelineState.TESTING,
   PipelineState.CODE_REVIEW,

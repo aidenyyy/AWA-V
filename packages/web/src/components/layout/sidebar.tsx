@@ -1,16 +1,33 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/cn";
+import { useConnectionStatus } from "@/hooks/use-connection-status";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: "◆" },
-  { href: "/projects", label: "Projects", icon: "▣" },
+  { href: "/skills", label: "Skills", icon: "✦" },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
+  const connected = useConnectionStatus();
+  const [starting, setStarting] = useState(false);
+
+  async function handleStartServer() {
+    setStarting(true);
+    try {
+      await fetch("/api/start-server", { method: "POST" });
+    } catch {
+      // WebSocket reconnect will pick up the connection
+    } finally {
+      // Keep spinner for a bit even after request returns,
+      // WS reconnect will flip `connected` to true
+      setTimeout(() => setStarting(false), 3000);
+    }
+  }
 
   return (
     <aside className="fixed left-0 top-0 z-40 flex h-screen w-16 flex-col items-center border-r border-border bg-abyss py-4">
@@ -51,9 +68,33 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Bottom section */}
+      {/* Bottom section — status + start button */}
       <div className="flex flex-col items-center gap-2 pb-2">
-        <div className="indicator indicator-active" title="System Online" />
+        {!connected && !starting && (
+          <button
+            onClick={handleStartServer}
+            className="group relative flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-surface hover:text-neon-cyan"
+            title="Start Server"
+          >
+            <span className="text-sm">▶</span>
+            <span className="pointer-events-none absolute left-full ml-2 whitespace-nowrap rounded-md bg-surface-light px-2 py-1 text-xs text-text-primary opacity-0 transition-opacity group-hover:opacity-100">
+              Start Server
+            </span>
+          </button>
+        )}
+        {starting && !connected && (
+          <div
+            className="h-3 w-3 rounded-full border-2 border-neon-cyan border-t-transparent animate-spin"
+            title="Starting Server..."
+          />
+        )}
+        <div
+          className={cn(
+            "indicator",
+            connected ? "indicator-active" : "indicator-error"
+          )}
+          title={connected ? "System Online" : "System Offline"}
+        />
       </div>
     </aside>
   );

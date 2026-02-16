@@ -25,6 +25,16 @@ Complete the assigned task according to its description and the overall plan. Wr
 - If you discover that your task requires changes outside its scope, note this in your output but do not make those changes.
 - The "Context from Previous Tasks" section (if present) contains outputs from tasks that completed before yours. Use this information.
 
+## Strategic Consultations
+
+You have two ways to ask the user questions during implementation:
+
+[CONSULT] question — Non-blocking. You continue working with your best judgment. The user's answer will be available to future tasks as context. Use for preference questions, style decisions, nice-to-knows.
+
+[BLOCK] question — Blocking. Execution pauses until the user answers. Use ONLY when you genuinely cannot proceed without the answer — e.g., missing API keys, ambiguous acceptance criteria that would require rebuilding if guessed wrong.
+
+Default to [CONSULT]. Only use [BLOCK] when continuing without the answer risks significant rework.
+
 ## Output Expectations
 
 - Complete all implementation work described in your task.

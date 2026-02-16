@@ -1,7 +1,7 @@
 import { interventionRepo } from "../db/repositories/intervention-repo.js";
 import { broadcaster } from "../ws/broadcaster.js";
 import { selfHealer } from "../pipeline/self-healing.js";
-import type { Intervention } from "@awa-v/shared";
+import type { Intervention, PipelineState } from "@awa-v/shared";
 import pino from "pino";
 
 const log = pino({ name: "intervention-manager" });
@@ -21,7 +21,11 @@ const log = pino({ name: "intervention-manager" });
 class InterventionManager {
   private pending = new Map<
     string,
-    { resolve: (response: string) => void; pipelineId: string }
+    {
+      resolve: (response: string) => void;
+      pipelineId: string;
+      postRestart?: boolean;
+    }
   >();
 
   /**
@@ -64,6 +68,57 @@ class InterventionManager {
   }
 
   /**
+   * Re-park an intervention after server restart.
+   * Creates a new intervention request in the DB and parks a promise.
+   * When the user responds, the pipeline will be advanced via the engine.
+   */
+  async reParkIntervention(
+    pipelineId: string,
+    stageType: PipelineState
+  ): Promise<void> {
+    // Check if there's already a pending intervention in the DB
+    const existing = interventionRepo.getPending(pipelineId);
+    let intervention: ReturnType<typeof interventionRepo.create>;
+
+    if (existing.length > 0) {
+      // Reuse the existing pending intervention
+      intervention = existing[0];
+      log.info(
+        { interventionId: intervention.id, pipelineId, stageType },
+        "Re-parking existing intervention after restart"
+      );
+    } else {
+      // Create a fresh intervention request
+      intervention = interventionRepo.create({
+        pipelineId,
+        stageType,
+        question: `Pipeline requires input for ${stageType} (resumed after server restart)`,
+        context: JSON.stringify({ postRestart: true, stageType }),
+      });
+
+      log.info(
+        { interventionId: intervention.id, pipelineId, stageType },
+        "Created new intervention after restart"
+      );
+    }
+
+    // Broadcast so the UI shows the pending intervention
+    broadcaster.broadcastToPipeline(pipelineId, {
+      type: "intervention:requested",
+      intervention: intervention as Intervention,
+    });
+
+    // Park a new promise — when resolved, advance the pipeline
+    this.pending.set(intervention.id, {
+      resolve: () => {
+        /* no-op: post-restart resolution handled in resolveIntervention */
+      },
+      pipelineId,
+      postRestart: true,
+    });
+  }
+
+  /**
    * Resolve a pending intervention with the user's response.
    * Unparks the waiting stage handler.
    */
@@ -86,8 +141,27 @@ class InterventionManager {
 
     const parked = this.pending.get(id);
     if (parked) {
+      const isPostRestart = parked.postRestart;
       parked.resolve(response);
       this.pending.delete(id);
+
+      // Post-restart interventions need to trigger pipeline advancement
+      // since there's no stage handler waiting on the parked promise
+      if (isPostRestart) {
+        log.info(
+          { interventionId: id, pipelineId: intervention.pipelineId },
+          "Post-restart intervention resolved — advancing pipeline"
+        );
+        // Lazy import to avoid circular dependency
+        import("../pipeline/engine.js").then(({ pipelineEngine }) => {
+          pipelineEngine.advance(intervention.pipelineId).catch((err) => {
+            log.error(
+              { pipelineId: intervention.pipelineId, error: (err as Error).message },
+              "Failed to advance pipeline after post-restart intervention"
+            );
+          });
+        });
+      }
     } else {
       log.warn(
         { interventionId: id },

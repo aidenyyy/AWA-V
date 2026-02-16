@@ -5,7 +5,7 @@ const log = pino({ name: "memory-service" });
 
 /**
  * Memory Service: provides deterministic cross-task context sharing (L1)
- * and project long-term memory via CLAUDE.md (L2).
+ * and project long-term memory in DB (L2).
  *
  * L1 is pure SQL queries + template concatenation with zero token cost.
  * L2 collects structured outputs for MVP; Claude-based summarization is Phase 2.
@@ -137,15 +137,15 @@ class MemoryService {
    * For MVP, this collects structured outputs from completed tasks.
    * Phase 2: call Claude to summarize patterns across pipeline results.
    */
-  generateClaudeMdUpdate(projectId: string, pipelineId: string): string | null {
-    log.info({ projectId, pipelineId }, "Generating CLAUDE.md update from pipeline results");
+  promotePipelineMemoriesToL2(projectId: string, pipelineId: string): string | null {
+    log.info({ projectId, pipelineId }, "Promoting pipeline memories to L2");
 
     // Collect all L1 memories from this pipeline
     const memories = memoryRepo.getByPipeline(pipelineId)
       .filter((m) => m.layer === "L1");
 
     if (memories.length === 0) {
-      log.info({ projectId, pipelineId }, "No L1 memories to promote to L2");
+      log.info({ projectId, pipelineId }, "No L1 memories to promote");
       return null;
     }
 
@@ -154,34 +154,34 @@ class MemoryService {
     const patterns = memories.filter((m) => m.type === "pattern");
     const errors = memories.filter((m) => m.type === "error");
 
-    const updateSections: string[] = [];
+    const promotedSections: string[] = [];
 
     if (decisions.length > 0) {
-      updateSections.push("## Key Decisions");
+      promotedSections.push("## Key Decisions");
       for (const d of decisions) {
-        updateSections.push(`- ${d.content}`);
+        promotedSections.push(`- ${d.content}`);
       }
     }
 
     if (patterns.length > 0) {
-      updateSections.push("## Patterns Observed");
+      promotedSections.push("## Patterns Observed");
       for (const p of patterns) {
-        updateSections.push(`- ${p.content}`);
+        promotedSections.push(`- ${p.content}`);
       }
     }
 
     if (errors.length > 0) {
-      updateSections.push("## Known Issues");
+      promotedSections.push("## Known Issues");
       for (const e of errors) {
-        updateSections.push(`- ${e.content}`);
+        promotedSections.push(`- ${e.content}`);
       }
     }
 
-    if (updateSections.length === 0) {
+    if (promotedSections.length === 0) {
       return null;
     }
 
-    const updateContent = updateSections.join("\n");
+    const updateContent = promotedSections.join("\n");
 
     // Store as L2 memory for future pipelines
     memoryRepo.create({

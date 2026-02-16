@@ -19,7 +19,7 @@ export default function SettingsPage() {
       setProject(proj);
       setModel(proj.model);
       setBudget(String(proj.maxBudgetUsd));
-    });
+    }).catch(() => {});
   }, [projectId]);
 
   async function handleSave() {
@@ -30,6 +30,8 @@ export default function SettingsPage() {
         maxBudgetUsd: parseFloat(budget),
       });
       setProject(updated as Project);
+    } catch {
+      // silent - project not updated
     } finally {
       setSaving(false);
     }

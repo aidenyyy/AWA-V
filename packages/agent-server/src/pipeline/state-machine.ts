@@ -37,14 +37,11 @@ const TRANSITIONS: Record<string, Partial<Record<TransitionOutcome, StateValue>>
     reject: PipelineState.CANCELLED,
   },
   [PipelineState.ADVERSARIAL_REVIEW]: {
-    pass: PipelineState.SKILL_DISTRIBUTION,
+    pass: PipelineState.CONTEXT_PREP,
     fail: PipelineState.PLAN_GENERATION,
     replan: PipelineState.PLAN_GENERATION,
   },
-  [PipelineState.SKILL_DISTRIBUTION]: {
-    next: PipelineState.MEMORY_INJECTION,
-  },
-  [PipelineState.MEMORY_INJECTION]: {
+  [PipelineState.CONTEXT_PREP]: {
     next: PipelineState.PARALLEL_EXECUTION,
   },
   [PipelineState.PARALLEL_EXECUTION]: {

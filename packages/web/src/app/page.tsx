@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
-import { CostBadge } from "@/components/layout/cost-badge";
+
 import { useWebSocket } from "@/hooks/use-websocket";
+import { useConnectionStatus } from "@/hooks/use-connection-status";
 import { api } from "@/lib/api-client";
 import type { Project } from "@awa-v/shared";
 
@@ -13,13 +14,39 @@ interface DirEntry {
   name: string;
   path: string;
   isGitRepo: boolean;
+  isSelf?: boolean;
 }
 
 type CreateMode = "detect" | "browse" | "manual";
 
+interface DashboardStats {
+  totalProjects: number;
+  activePipelines: number;
+  totalCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  tokensByModel: {
+    haiku: { input: number; output: number };
+    sonnet: { input: number; output: number };
+    opus: { input: number; output: number };
+  };
+  totalEvolutions: number;
+  totalMemories: number;
+  activeSessions: number;
+  pendingSelfUpdates: number;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 export default function DashboardPage() {
   useWebSocket();
+  const connected = useConnectionStatus();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [showCreate, setShowCreate] = useState(false);
 
   // Create form
@@ -39,6 +66,14 @@ export default function DashboardPage() {
 
   useEffect(() => {
     api.getProjects().then((p) => setProjects(p as Project[]));
+    api.getDashboardStats().then((s) => setStats(s as DashboardStats)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      api.getDashboardStats().then((s) => setStats(s as DashboardStats)).catch(() => {});
+    }, 10_000);
+    return () => clearInterval(interval);
   }, []);
 
   function openCreate() {
@@ -114,12 +149,12 @@ export default function DashboardPage() {
 
         <div className="p-6">
           {/* Stats overview */}
-          <div className="mb-8 grid grid-cols-4 gap-4">
+          <div className="mb-4 grid grid-cols-4 gap-4">
             {[
               { label: "Projects", value: projects.length, color: "text-neon-cyan" },
-              { label: "Active Pipelines", value: "0", color: "text-neon-green" },
-              { label: "Total Cost", value: "$0.00", color: "text-neon-yellow" },
-              { label: "System", value: "Online", color: "text-neon-green" },
+              { label: "Active Pipelines", value: stats?.activePipelines ?? 0, color: "text-neon-green" },
+              { label: "Active Sessions", value: stats?.activeSessions ?? 0, color: "text-neon-magenta" },
+              { label: "System", value: connected ? "Online" : "Offline", color: connected ? "text-neon-green" : "text-neon-red" },
             ].map((stat) => (
               <div key={stat.label} className="glass-card p-4">
                 <div className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
@@ -130,6 +165,87 @@ export default function DashboardPage() {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* Token Usage + System Activity */}
+          <div className="mb-8 grid grid-cols-4 gap-4">
+            {/* Token Usage by Model */}
+            <div className="glass-card col-span-2 p-4">
+              <div className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-3">
+                Token Usage by Model
+              </div>
+              {stats && (() => {
+                const models = [
+                  { key: "haiku" as const, label: "Haiku", color: "text-neon-green", barColor: "bg-neon-green" },
+                  { key: "sonnet" as const, label: "Sonnet", color: "text-neon-cyan", barColor: "bg-neon-cyan" },
+                  { key: "opus" as const, label: "Opus", color: "text-neon-magenta", barColor: "bg-neon-magenta" },
+                ]
+                  .map((m) => ({
+                    ...m,
+                    input: stats.tokensByModel[m.key]?.input ?? 0,
+                    output: stats.tokensByModel[m.key]?.output ?? 0,
+                    total: (stats.tokensByModel[m.key]?.input ?? 0) + (stats.tokensByModel[m.key]?.output ?? 0),
+                  }))
+                  .sort((a, b) => b.total - a.total);
+
+                const maxTotal = Math.max(...models.map((m) => m.total), 1);
+
+                return (
+                  <div className="space-y-2.5">
+                    {models.map((m) => (
+                      <div key={m.key}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className={`font-mono text-xs font-semibold ${m.color}`}>
+                            {m.label}
+                          </span>
+                          <span className="flex gap-3 font-mono text-[10px] text-text-muted">
+                            <span>&#8595; {formatTokens(m.input)}</span>
+                            <span>&#8593; {formatTokens(m.output)}</span>
+                          </span>
+                        </div>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-deep">
+                          <div
+                            className={`h-full ${m.barColor} rounded-full transition-all duration-500`}
+                            style={{ width: `${(m.total / maxTotal) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    {models.every((m) => m.total === 0) && (
+                      <div className="py-2 text-center font-mono text-[10px] text-text-muted">
+                        No token usage yet
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+              {!stats && (
+                <div className="py-2 text-center font-mono text-[10px] text-text-muted">
+                  Loading...
+                </div>
+              )}
+            </div>
+
+            {/* System Activity */}
+            <div className="glass-card col-span-2 p-4">
+              <div className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-3">
+                System Activity
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs text-text-secondary">Evolutions</span>
+                  <span className="font-mono text-sm font-semibold text-neon-cyan">
+                    {stats?.totalEvolutions ?? 0}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs text-text-secondary">Memories</span>
+                  <span className="font-mono text-sm font-semibold text-neon-cyan">
+                    {stats?.totalMemories ?? 0}
+                  </span>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Projects grid */}
@@ -148,9 +264,16 @@ export default function DashboardPage() {
               >
                 <div className="flex items-start justify-between">
                   <div>
-                    <h3 className="font-mono text-sm font-semibold text-text-primary">
-                      {project.name}
-                    </h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-mono text-sm font-semibold text-text-primary">
+                        {project.name}
+                      </h3>
+                      {project.isSelfRepo === 1 && (
+                        <span className="rounded border border-neon-magenta/30 px-1 py-0.5 text-[9px] font-mono text-neon-magenta">
+                          SELF
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-1 text-[11px] font-mono text-text-muted truncate max-w-[250px]">
                       {project.repoPath}
                     </p>
@@ -158,10 +281,6 @@ export default function DashboardPage() {
                   <span className="indicator indicator-active" />
                 </div>
 
-                <div className="mt-4 flex items-center gap-4 text-[10px] font-mono text-text-muted">
-                  <span>Model: {project.model}</span>
-                  <CostBadge costUsd={project.maxBudgetUsd} size="sm" />
-                </div>
               </Link>
             ))}
 
@@ -242,6 +361,11 @@ export default function DashboardPage() {
                             <div className="flex items-center gap-2">
                               <span className="text-neon-green text-xs">&#9679;</span>
                               <span className="text-xs text-text-primary">{repo.name}</span>
+                              {repo.isSelf && (
+                                <span className="rounded border border-neon-magenta/30 px-1 py-0.5 text-[9px] text-neon-magenta">
+                                  SELF
+                                </span>
+                              )}
                             </div>
                             <div className="mt-0.5 text-[10px] text-text-muted ml-4 truncate">
                               {repo.path}
@@ -293,19 +417,21 @@ export default function DashboardPage() {
                                 {entry.isGitRepo ? (
                                   <span className="text-neon-green">&#9679;</span>
                                 ) : (
-                                  "&#128193;"
+                                  <span className="text-text-muted">&#9675;</span>
                                 )}
                               </span>
                               {entry.name}
                             </button>
-                            {entry.isGitRepo && (
-                              <button
-                                onClick={() => selectRepo(entry)}
-                                className="mr-2 rounded border border-neon-cyan/30 px-2 py-0.5 font-mono text-[10px] text-neon-cyan transition hover:bg-neon-cyan/10"
-                              >
-                                Select
-                              </button>
-                            )}
+                            <button
+                              onClick={() => selectRepo(entry)}
+                              className={`mr-2 rounded border px-2 py-0.5 font-mono text-[10px] transition ${
+                                entry.isGitRepo
+                                  ? "border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
+                                  : "border-border text-text-muted hover:bg-surface"
+                              }`}
+                            >
+                              Select
+                            </button>
                           </div>
                         ))
                       )}
@@ -374,6 +500,7 @@ export default function DashboardPage() {
           )}
         </div>
       </main>
+
     </div>
   );
 }

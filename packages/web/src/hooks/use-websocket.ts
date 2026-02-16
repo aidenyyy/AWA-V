@@ -6,6 +6,8 @@ import { usePipelineStore } from "@/stores/pipeline-store";
 import { useStreamStore } from "@/stores/stream-store";
 import { useNotificationStore } from "@/stores/notification-store";
 import { useInterventionStore } from "@/stores/intervention-store";
+import { useConsultationStore } from "@/stores/consultation-store";
+import { useSessionStore } from "@/stores/session-store";
 import type { ServerEvent } from "@awa-v/shared";
 
 export function useWebSocket() {
@@ -19,6 +21,8 @@ export function useWebSocket() {
   const addNotification = useNotificationStore((s) => s.addNotification);
   const addIntervention = useInterventionStore((s) => s.addIntervention);
   const resolveIntervention = useInterventionStore((s) => s.resolveIntervention);
+  const upsertConsultation = useConsultationStore((s) => s.upsertConsultation);
+  const updateSession = useSessionStore((s) => s.updateSession);
 
   useEffect(() => {
     if (connected.current) return;
@@ -53,6 +57,21 @@ export function useWebSocket() {
         case "intervention:resolved":
           resolveIntervention(event.intervention.id, event.intervention);
           break;
+        case "session:updated":
+          updateSession(event.session);
+          break;
+        case "consultation:requested":
+          upsertConsultation(event.consultation);
+          addNotification({
+            level: "info",
+            title: "Consultation Requested",
+            message: event.consultation.question,
+            pipelineId: event.consultation.pipelineId,
+          });
+          break;
+        case "consultation:answered":
+          upsertConsultation(event.consultation);
+          break;
         case "notification":
           addNotification({
             level: event.level,
@@ -69,7 +88,7 @@ export function useWebSocket() {
       wsClient.disconnect();
       connected.current = false;
     };
-  }, [updatePipeline, updateStage, updateTask, addPlan, updatePlan, addChunk, addNotification, addIntervention, resolveIntervention]);
+  }, [updatePipeline, updateStage, updateTask, addPlan, updatePlan, addChunk, addNotification, addIntervention, resolveIntervention, upsertConsultation, updateSession]);
 }
 
 export function useSubscribeToProject(projectId: string | null) {

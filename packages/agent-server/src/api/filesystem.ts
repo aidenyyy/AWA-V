@@ -1,13 +1,27 @@
 import type { FastifyInstance } from "fastify";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, dirname } from "node:path";
-import { execFileSync } from "node:child_process";
+import { isSelfRepo } from "../utils/self-detect.js";
 
 interface DirEntry {
   name: string;
   path: string;
   isGitRepo: boolean;
+  isSelf?: boolean;
+}
+
+/** Check if a path is a git repo — supports both .git directory and .git file (worktrees) */
+function isGitRepo(dirPath: string): boolean {
+  const gitPath = resolve(dirPath, ".git");
+  try {
+    // statSync works for both files and directories
+    statSync(gitPath);
+    return true;
+  } catch {
+    // Fallback: check with existsSync (handles edge cases)
+    return existsSync(gitPath);
+  }
 }
 
 export function registerFilesystemRoutes(app: FastifyInstance) {
@@ -32,14 +46,7 @@ export function registerFilesystemRoutes(app: FastifyInstance) {
           })
           .map((e) => {
             const fullPath = resolve(resolved, e.name);
-            let isGitRepo = false;
-            try {
-              statSync(resolve(fullPath, ".git"));
-              isGitRepo = true;
-            } catch {
-              // not a git repo
-            }
-            return { name: e.name, path: fullPath, isGitRepo };
+            return { name: e.name, path: fullPath, isGitRepo: isGitRepo(fullPath) };
           })
           // Git repos first, then alphabetical
           .sort((a, b) => {
@@ -89,11 +96,8 @@ export function registerFilesystemRoutes(app: FastifyInstance) {
         for (const e of entries) {
           if (!e.isDirectory() || e.name.startsWith(".")) continue;
           const fullPath = resolve(dir, e.name);
-          try {
-            statSync(resolve(fullPath, ".git"));
-            repos.push({ name: e.name, path: fullPath, isGitRepo: true });
-          } catch {
-            // not a git repo
+          if (isGitRepo(fullPath)) {
+            repos.push({ name: e.name, path: fullPath, isGitRepo: true, isSelf: isSelfRepo(fullPath) });
           }
         }
       } catch {
@@ -101,6 +105,15 @@ export function registerFilesystemRoutes(app: FastifyInstance) {
       }
     }
 
-    return { data: repos };
+    // Deduplicate by lowercase path (macOS has case-insensitive FS)
+    const seen = new Set<string>();
+    const deduped = repos.filter((r) => {
+      const key = r.path.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return { data: deduped };
   });
 }

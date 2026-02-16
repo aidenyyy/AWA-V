@@ -4,7 +4,9 @@ import {
   TaskState,
   DEFAULTS,
 } from "@awa-v/shared";
-import type { PlanTaskBreakdown, StreamChunk } from "@awa-v/shared";
+import type { PlanTaskBreakdown, StreamChunk, ModelTier, ModelId } from "@awa-v/shared";
+import { COMPLEXITY_MODEL_MAP, STAGE_MODEL_MAP } from "@awa-v/shared";
+import { modelRouter } from "../services/model-router.js";
 import {
   stageRepo,
   taskRepo,
@@ -24,6 +26,11 @@ import { branchManager } from "../git/branch-manager.js";
 import { worktreeManager } from "../git/worktree-manager.js";
 import { mergeManager } from "../git/merge-manager.js";
 import { interventionManager } from "../services/intervention-manager.js";
+import { consultationManager } from "../services/consultation-manager.js";
+import { toolForge } from "../services/tool-forge.js";
+import { runPreflightChecks } from "../services/preflight-checks.js";
+import { runFastGate } from "../services/fast-gate.js";
+import { runPostMergeSmoke } from "../services/post-merge-smoke.js";
 import { PLANNER_PROMPT } from "../prompts/planner.js";
 import { EXECUTOR_PROMPT } from "../prompts/executor.js";
 import { ADVERSARIAL_REVIEWER_PROMPT } from "../prompts/adversarial-reviewer.js";
@@ -32,6 +39,38 @@ import { CODE_REVIEWER_PROMPT } from "../prompts/code-reviewer.js";
 import pino from "pino";
 
 const log = pino({ name: "stage-runner" });
+
+// ─── Model Routing ─────────────────────────────────────────
+
+/** Resolve the model to use for a given stage, with optional task-level complexity override */
+function resolveModel(
+  stageType: string,
+  projectModel: string,
+  complexity?: ModelTier,
+  projectId?: string,
+  agentRole?: string
+): string {
+  // Task-level complexity — use evolution-driven routing if project context is available
+  if (complexity && projectId && agentRole) {
+    return evolutionEngine.selectModel(projectId, stageType, agentRole, complexity);
+  }
+  // Task-level complexity without history data — use default mapping
+  if (complexity) {
+    return COMPLEXITY_MODEL_MAP[complexity];
+  }
+  // Stage-level default, falls back to project model
+  return STAGE_MODEL_MAP[stageType] ?? projectModel;
+}
+
+// ─── Self-Repo Helper ───────────────────────────────────────
+
+/** For self-repo pipelines, use the staging worktree. Otherwise project.repoPath. */
+function getEffectiveRepoPath(
+  project: { repoPath: string },
+  pipeline: { selfWorktreePath?: string | null }
+): string {
+  return pipeline.selfWorktreePath ?? project.repoPath;
+}
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -54,6 +93,7 @@ interface SpawnAndWaitOpts {
   model: string;
   permissionMode: string;
   maxTurns?: number;
+  isSelfRepo?: boolean;
 }
 
 async function spawnClaudeAndWait(opts: SpawnAndWaitOpts): Promise<{
@@ -74,19 +114,33 @@ async function spawnClaudeAndWait(opts: SpawnAndWaitOpts): Promise<{
     model: opts.model,
   });
 
+  broadcaster.broadcastToPipeline(opts.pipelineId, {
+    type: "session:updated",
+    session: claudeSessionRepo.getById(session.id)! as any,
+  });
+
   const proc = processManager.spawn(session.id, {
     prompt: opts.prompt,
     cwd: opts.repoPath,
+    pipelineId: opts.pipelineId,
     model: opts.model,
     permissionMode: opts.permissionMode,
     systemPrompt: opts.systemPrompt,
     maxTurns: opts.maxTurns,
+    isSelfRepo: opts.isSelfRepo,
   });
 
   claudeSessionRepo.update(session.id, { pid: proc.pid });
 
+  broadcaster.broadcastToPipeline(opts.pipelineId, {
+    type: "session:updated",
+    session: claudeSessionRepo.getById(session.id)! as any,
+  });
+
   return new Promise((resolve, reject) => {
     let output = "";
+    let lastError = "";
+    let costEventCount = 0;
 
     proc.events.on("chunk", (chunk: StreamChunk) => {
       broadcaster.broadcastToPipeline(opts.pipelineId, {
@@ -105,6 +159,14 @@ async function spawnClaudeAndWait(opts: SpawnAndWaitOpts): Promise<{
           outputTokens: chunk.outputTokens,
           costUsd: chunk.costUsd,
         });
+
+        costEventCount++;
+        if (costEventCount % 5 === 0) {
+          broadcaster.broadcastToPipeline(opts.pipelineId, {
+            type: "session:updated",
+            session: claudeSessionRepo.getById(session.id)! as any,
+          });
+        }
       }
 
       if (chunk.type === "done") {
@@ -113,15 +175,22 @@ async function spawnClaudeAndWait(opts: SpawnAndWaitOpts): Promise<{
           exitCode: chunk.exitCode,
         });
 
+        const summary = output || lastError || "";
         taskRepo.update(task.id, {
           state: chunk.exitCode === 0 ? TaskState.COMPLETED : TaskState.FAILED,
-          resultSummary: output.slice(0, 2000),
+          resultSummary: summary.slice(0, 2000),
         });
 
-        resolve({ output, exitCode: chunk.exitCode, taskId: task.id });
+        broadcaster.broadcastToPipeline(opts.pipelineId, {
+          type: "session:updated",
+          session: claudeSessionRepo.getById(session.id)! as any,
+        });
+
+        resolve({ output: output || lastError, exitCode: chunk.exitCode, taskId: task.id });
       }
 
       if (chunk.type === "error") {
+        lastError = chunk.message;
         log.error({ taskId: task.id, error: chunk.message }, "Claude stream error");
       }
     });
@@ -161,6 +230,8 @@ function parsePlanOutput(raw: string): {
       if (!t.title || !t.description) {
         throw new Error(`Task ${i} missing 'title' or 'description'`);
       }
+      const rawComplexity = String(t.complexity ?? "medium");
+      const complexity = (["low", "medium", "high"].includes(rawComplexity) ? rawComplexity : "medium") as ModelTier;
       return {
         title: String(t.title),
         description: String(t.description),
@@ -168,11 +239,57 @@ function parsePlanOutput(raw: string): {
         domain: String(t.domain ?? "general"),
         dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn.map(String) : [],
         canParallelize: Boolean(t.canParallelize ?? true),
+        complexity,
       };
     }
   );
 
   return { content: String(planData.content), taskBreakdown };
+}
+
+// ─── Helper: extract consultation markers from Claude output ─
+
+/**
+ * Extract [CONSULT] and [BLOCK] markers from Claude output.
+ * [CONSULT] question — non-blocking, fire-and-forget
+ * [BLOCK] question   — blocking, parks execution until user answers
+ * Returns array of block responses (empty if no [BLOCK] markers).
+ */
+async function extractConsultations(
+  output: string,
+  pipelineId: string,
+  stageType: string,
+  taskId?: string
+): Promise<string[]> {
+  const blockResponses: string[] = [];
+
+  // Non-blocking consultations
+  const consultRegex = /\[CONSULT\]\s*(.+?)(?:\n|$)/g;
+  let match;
+  while ((match = consultRegex.exec(output)) !== null) {
+    consultationManager.requestConsultation({
+      pipelineId,
+      taskId,
+      stageType,
+      question: match[1].trim(),
+      context: { source: "claude_output", stageType },
+    });
+  }
+
+  // Blocking consultations — parks execution
+  const blockRegex = /\[BLOCK\]\s*(.+?)(?:\n|$)/g;
+  while ((match = blockRegex.exec(output)) !== null) {
+    const response = await consultationManager.requestBlock({
+      pipelineId,
+      taskId,
+      stageType,
+      question: match[1].trim(),
+      context: { source: "claude_output", stageType },
+    });
+    blockResponses.push(response);
+  }
+
+  return blockResponses;
 }
 
 // ─── Helper: create task records from plan breakdown ────────
@@ -229,17 +346,27 @@ function splitTasksFromPlan(pipelineId: string, planId: string): string[] {
 async function executeOneTask(
   pipelineId: string,
   taskId: string,
-  project: { id: string; repoPath: string; model: string; permissionMode: string },
+  project: { id: string; repoPath: string; model: string; permissionMode: string; isSelfRepo?: number | boolean },
   plan: { content: string } | null | undefined,
   requirements: string,
-  repoPath?: string
+  repoPath?: string,
+  complexity?: ModelTier
 ): Promise<void> {
   const effectiveRepoPath = repoPath ?? project.repoPath;
 
   const task = taskRepo.getById(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
 
-  log.info({ pipelineId, taskId, role: task.agentRole }, "Executing task");
+  // Resolve model: use data-driven complexity routing for parallel_execution tasks
+  const taskModel = resolveModel(
+    PipelineState.PARALLEL_EXECUTION,
+    project.model,
+    complexity,
+    project.id,
+    task.agentRole
+  );
+
+  log.info({ pipelineId, taskId, role: task.agentRole, model: taskModel, complexity }, "Executing task");
 
   taskRepo.update(taskId, { state: TaskState.RUNNING });
   broadcaster.broadcastToPipeline(pipelineId, {
@@ -248,7 +375,35 @@ async function executeOneTask(
   });
 
   const memoryContext = memoryService.getContextForTask(project.id, pipelineId);
-  const skillPack = skillDistributor.getSkillPack(task.agentRole, "general");
+
+  // Map agent role to distributor task type for skill matching
+  const ROLE_TO_TASK_TYPE: Record<string, string> = {
+    executor: "implement",
+    implementer: "implement",
+    tester: "test",
+    "code-reviewer": "review",
+    planner: "plan",
+    "adversarial-reviewer": "review",
+  };
+  const mappedType = ROLE_TO_TASK_TYPE[task.agentRole] ?? task.agentRole;
+  const rawSkillPack = skillDistributor.getSkillPack(mappedType, "general");
+
+  // Tool Forge: generate tools if skill pack is empty
+  const skillPack = await toolForge.forgeIfNeeded({
+    pipelineId,
+    taskId,
+    taskDescription: task.prompt,
+    agentRole: task.agentRole,
+    domain: "general",
+    currentSkillPack: rawSkillPack,
+    repoPath: effectiveRepoPath,
+  });
+
+  // Build skill instructions from skill.instructions fields
+  const skillInstructionText = skillPack.skills
+    .filter((s) => s.instructions)
+    .map((s) => `### ${s.name}\n${s.instructions}`)
+    .join("\n\n");
 
   const prompt = buildPrompt({
     role: task.agentRole,
@@ -256,28 +411,41 @@ async function executeOneTask(
     planContent: plan?.content,
     taskDescription: task.prompt,
     memoryContext: memoryContext || undefined,
-    skillInstructions: skillPack.claudeMdSnippets.join("\n\n") || undefined,
+    skillInstructions: skillInstructionText || undefined,
     repoPath: effectiveRepoPath,
   });
 
   const session = claudeSessionRepo.create({
     taskId,
-    model: project.model,
+    model: taskModel,
+  });
+
+  broadcaster.broadcastToPipeline(pipelineId, {
+    type: "session:updated",
+    session: claudeSessionRepo.getById(session.id)! as any,
   });
 
   const proc = processManager.spawn(session.id, {
     prompt,
     cwd: effectiveRepoPath,
-    model: project.model,
+    pipelineId,
+    model: taskModel,
     permissionMode: project.permissionMode,
     systemPrompt: EXECUTOR_PROMPT,
     skillPack: skillPack.skills.length > 0 ? skillPack : undefined,
+    isSelfRepo: !!project.isSelfRepo,
   });
 
   claudeSessionRepo.update(session.id, { pid: proc.pid });
 
+  broadcaster.broadcastToPipeline(pipelineId, {
+    type: "session:updated",
+    session: claudeSessionRepo.getById(session.id)! as any,
+  });
+
   return new Promise<void>((resolve, reject) => {
     let resultText = "";
+    let costEventCount = 0;
 
     proc.events.on("chunk", (chunk: StreamChunk) => {
       broadcaster.broadcastToPipeline(pipelineId, {
@@ -296,6 +464,14 @@ async function executeOneTask(
           outputTokens: chunk.outputTokens,
           costUsd: chunk.costUsd,
         });
+
+        costEventCount++;
+        if (costEventCount % 5 === 0) {
+          broadcaster.broadcastToPipeline(pipelineId, {
+            type: "session:updated",
+            session: claudeSessionRepo.getById(session.id)! as any,
+          });
+        }
       }
 
       if (chunk.type === "done") {
@@ -315,14 +491,43 @@ async function executeOneTask(
             taskId,
             resultText.slice(0, 4000)
           );
+          // Record successful outcome for model routing
+          if (complexity) {
+            const latestSession = claudeSessionRepo.getByTask(taskId).pop();
+            modelRouter.recordOutcome(
+              project.id,
+              task.agentRole,
+              complexity,
+              taskModel,
+              true,
+              (latestSession?.inputTokens ?? 0) + (latestSession?.outputTokens ?? 0)
+            );
+          }
           resolve();
         } else {
           taskRepo.update(taskId, {
             state: TaskState.FAILED,
             resultSummary: `Exit code ${chunk.exitCode}: ${resultText.slice(0, 1000)}`,
           });
+          // Record failed outcome for model routing
+          if (complexity) {
+            const latestSession = claudeSessionRepo.getByTask(taskId).pop();
+            modelRouter.recordOutcome(
+              project.id,
+              task.agentRole,
+              complexity,
+              taskModel,
+              false,
+              (latestSession?.inputTokens ?? 0) + (latestSession?.outputTokens ?? 0)
+            );
+          }
           reject(new Error(`Task ${taskId} exited with code ${chunk.exitCode}`));
         }
+
+        broadcaster.broadcastToPipeline(pipelineId, {
+          type: "session:updated",
+          session: claudeSessionRepo.getById(session.id)! as any,
+        });
 
         broadcaster.broadcastToPipeline(pipelineId, {
           type: "task:updated",
@@ -357,23 +562,44 @@ const stageHandlers: Record<string, StageHandler> = {
     const project = projectRepo.getById(pipeline.projectId);
     if (!project) return { outcome: "fail", error: "Project not found" };
 
+    const effectiveRepoPath = getEffectiveRepoPath(project, pipeline);
+
+    const preflight = runPreflightChecks(effectiveRepoPath);
+    if (!preflight.ok) {
+      const response = await interventionManager.requestIntervention({
+        pipelineId,
+        stageType: "plan_generation",
+        question: `Preflight checks failed: ${preflight.error}. Proceed anyway, replan, or abort?`,
+        context: { checks: preflight.checks, error: preflight.error },
+      });
+      if (response !== "proceed") {
+        return { outcome: "fail", error: `Preflight failed: ${preflight.error}` };
+      }
+    }
+
     log.info({ pipelineId }, "Generating plan via Claude");
 
+    const plannerModel = resolveModel(PipelineState.PLAN_GENERATION, project.model);
     const { output, exitCode } = await spawnClaudeAndWait({
       pipelineId,
       stageId,
       agentRole: "planner",
       prompt: pipeline.requirements,
       systemPrompt: PLANNER_PROMPT,
-      repoPath: project.repoPath,
-      model: project.model,
+      repoPath: effectiveRepoPath,
+      model: plannerModel,
       permissionMode: project.permissionMode,
       maxTurns: 3,
+      isSelfRepo: !!project.isSelfRepo,
     });
 
     if (exitCode !== 0) {
-      return { outcome: "fail", error: `Planner exited with code ${exitCode}` };
+      const detail = output ? `: ${output.slice(0, 500)}` : "";
+      return { outcome: "fail", error: `Planner exited with code ${exitCode}${detail}` };
     }
+
+    // Extract consultations from planner output
+    await extractConsultations(output, pipelineId, "plan_generation");
 
     try {
       const parsed = parsePlanOutput(output);
@@ -425,6 +651,8 @@ const stageHandlers: Record<string, StageHandler> = {
     const project = projectRepo.getById(pipeline.projectId);
     if (!project) return { outcome: "fail", error: "Project not found" };
 
+    const effectiveRepoPath = getEffectiveRepoPath(project, pipeline);
+
     const plan = planRepo.getLatest(pipelineId);
     if (!plan) return { outcome: "fail", error: "No plan found" };
 
@@ -440,21 +668,26 @@ const stageHandlers: Record<string, StageHandler> = {
       JSON.stringify(planTasks, null, 2),
     ].join("");
 
+    const adversarialModel = resolveModel(PipelineState.ADVERSARIAL_REVIEW, project.model);
     const { output, exitCode } = await spawnClaudeAndWait({
       pipelineId,
       stageId,
       agentRole: "adversarial-reviewer",
       prompt: reviewPrompt,
       systemPrompt: ADVERSARIAL_REVIEWER_PROMPT,
-      repoPath: project.repoPath,
-      model: project.model,
+      repoPath: effectiveRepoPath,
+      model: adversarialModel,
       permissionMode: project.permissionMode,
       maxTurns: 2,
+      isSelfRepo: !!project.isSelfRepo,
     });
 
     if (exitCode !== 0) {
       return { outcome: "fail", error: `Reviewer exited with code ${exitCode}` };
     }
+
+    // Extract consultations from adversarial reviewer output
+    await extractConsultations(output, pipelineId, "adversarial_review");
 
     // Parse verdict JSON
     try {
@@ -498,16 +731,27 @@ const stageHandlers: Record<string, StageHandler> = {
     }
   },
 
-  // Match skills to each pending task via the rule engine
-  [PipelineState.SKILL_DISTRIBUTION]: async (pipelineId) => {
-    log.info({ pipelineId }, "Distributing skills to tasks");
+  // Context prep: distribute skills and validate memory context.
+  [PipelineState.CONTEXT_PREP]: async (pipelineId) => {
+    log.info({ pipelineId }, "Preparing context for execution");
+
+    // Map agent roles (from plan breakdown) to distributor task types
+    const ROLE_TO_TASK_TYPE: Record<string, string> = {
+      executor: "implement",
+      implementer: "implement",
+      tester: "test",
+      "code-reviewer": "review",
+      planner: "plan",
+      "adversarial-reviewer": "review",
+    };
 
     const tasks = taskRepo
       .getByPipeline(pipelineId)
       .filter((t) => t.state === TaskState.PENDING);
 
     for (const task of tasks) {
-      const skillPack = skillDistributor.getSkillPack(task.agentRole, "general");
+      const mappedType = ROLE_TO_TASK_TYPE[task.agentRole] ?? task.agentRole;
+      const skillPack = skillDistributor.getSkillPack(mappedType, "general");
       if (skillPack.skills.length > 0) {
         taskRepo.update(task.id, {
           assignedSkills: skillPack.skills.map((s) => s.name),
@@ -519,17 +763,10 @@ const stageHandlers: Record<string, StageHandler> = {
       }
     }
 
-    log.info({ pipelineId, taskCount: tasks.length }, "Skills distributed");
-    return { outcome: "pass" };
-  },
-
-  // Verify memory context is available (actual injection happens in execution)
-  [PipelineState.MEMORY_INJECTION]: async (pipelineId) => {
     const pipeline = pipelineRepo.getById(pipelineId);
     if (!pipeline) return { outcome: "fail", error: "Pipeline not found" };
-
     const ctx = memoryService.getContextForTask(pipeline.projectId, pipelineId);
-    log.info({ pipelineId, hasContext: !!ctx }, "Memory context prepared");
+    log.info({ pipelineId, taskCount: tasks.length, hasContext: !!ctx }, "Context prep completed");
     return { outcome: "pass" };
   },
 
@@ -541,9 +778,13 @@ const stageHandlers: Record<string, StageHandler> = {
     const project = projectRepo.getById(pipeline.projectId);
     if (!project) return { outcome: "fail", error: "Project not found" };
 
+    const effectiveRepoPath = getEffectiveRepoPath(project, pipeline);
+
     const plan = planRepo.getLatest(pipelineId);
     const planObj = plan ? { content: (plan as { content: string }).content } : null;
 
+    // Build a map from task title → complexity from the plan breakdown
+    const breakdownItems = plan ? (plan as { taskBreakdown: PlanTaskBreakdown[] }).taskBreakdown : [];
     const pendingTasks = taskRepo
       .getByPipeline(pipelineId)
       .filter((t) => t.state === TaskState.PENDING);
@@ -561,6 +802,12 @@ const stageHandlers: Record<string, StageHandler> = {
       const worktreePath = worktreeManager.createWorktree(project.repoPath, branchName);
       taskRepo.update(task.id, { worktreePath });
     }
+
+    // Build a map from task prompt to complexity (match via description)
+    const promptComplexityMap = new Map<string, ModelTier>();
+    breakdownItems.forEach((item) => {
+      promptComplexityMap.set(item.description, (item.complexity as ModelTier) ?? "medium");
+    });
 
     const running = new Set<string>();
     const completed = new Set<string>();
@@ -582,8 +829,10 @@ const stageHandlers: Record<string, StageHandler> = {
         for (const task of ready.slice(0, slots)) {
           running.add(task.id);
           const taskRecord = taskRepo.getById(task.id);
-          const taskRepoPath = taskRecord?.worktreePath ?? project.repoPath;
-          executeOneTask(pipelineId, task.id, project, planObj, pipeline.requirements, taskRepoPath)
+          const taskRepoPath = taskRecord?.worktreePath ?? effectiveRepoPath;
+          // Look up complexity from plan breakdown (matched by prompt/description)
+          const taskComplexity = promptComplexityMap.get(task.prompt) ?? "medium";
+          executeOneTask(pipelineId, task.id, project, planObj, pipeline.requirements, taskRepoPath, taskComplexity)
             .then(() => {
               running.delete(task.id);
               completed.add(task.id);
@@ -614,7 +863,7 @@ const stageHandlers: Record<string, StageHandler> = {
             // Merge worktree branches back to main
             const completedTaskIds = [...completed];
             mergeManager.mergeAllWorktrees(
-              pipelineId, project.repoPath, completedTaskIds
+              pipelineId, effectiveRepoPath, completedTaskIds
             ).then((mergeResult) => {
               if (!mergeResult.allMerged) {
                 resolve({
@@ -646,7 +895,22 @@ const stageHandlers: Record<string, StageHandler> = {
     const project = projectRepo.getById(pipeline.projectId);
     if (!project) return { outcome: "fail", error: "Project not found" };
 
+    const effectiveRepoPath = getEffectiveRepoPath(project, pipeline);
+
     const plan = planRepo.getLatest(pipelineId);
+
+    const gate = runFastGate(effectiveRepoPath);
+    if (!gate.ok) {
+      const response = await interventionManager.requestIntervention({
+        pipelineId,
+        stageType: "testing",
+        question: "Fast gate failed (typecheck/lint). Proceed anyway, replan, or abort?",
+        context: { checks: gate.checks },
+      });
+      if (response !== "proceed") {
+        return { outcome: "fail", error: "Fast gate failed before tester execution" };
+      }
+    }
 
     log.info({ pipelineId }, "Running testing stage");
 
@@ -656,18 +920,20 @@ const stageHandlers: Record<string, StageHandler> = {
       planContent: plan ? (plan as { content: string }).content : undefined,
       taskDescription:
         "Run existing tests and write new tests for the changes made in this pipeline. Report pass/fail results.",
-      repoPath: project.repoPath,
+      repoPath: effectiveRepoPath,
     });
 
+    const testerModel = resolveModel(PipelineState.TESTING, project.model);
     const { output: testOutput, exitCode } = await spawnClaudeAndWait({
       pipelineId,
       stageId,
       agentRole: "tester",
       prompt: testPrompt,
       systemPrompt: TESTER_PROMPT,
-      repoPath: project.repoPath,
-      model: project.model,
+      repoPath: effectiveRepoPath,
+      model: testerModel,
       permissionMode: project.permissionMode,
+      isSelfRepo: !!project.isSelfRepo,
     });
 
     if (exitCode !== 0) {
@@ -700,6 +966,8 @@ const stageHandlers: Record<string, StageHandler> = {
     const project = projectRepo.getById(pipeline.projectId);
     if (!project) return { outcome: "fail", error: "Project not found" };
 
+    const effectiveRepoPath = getEffectiveRepoPath(project, pipeline);
+
     const plan = planRepo.getLatest(pipelineId);
 
     log.info({ pipelineId }, "Running code review");
@@ -710,23 +978,28 @@ const stageHandlers: Record<string, StageHandler> = {
       planContent: plan ? (plan as { content: string }).content : undefined,
       taskDescription:
         "Review all code changes made in this pipeline. Check git diff and assess quality, correctness, and security.",
-      repoPath: project.repoPath,
+      repoPath: effectiveRepoPath,
     });
 
+    const reviewerModel = resolveModel(PipelineState.CODE_REVIEW, project.model);
     const { output, exitCode } = await spawnClaudeAndWait({
       pipelineId,
       stageId,
       agentRole: "code-reviewer",
       prompt: reviewPrompt,
       systemPrompt: CODE_REVIEWER_PROMPT,
-      repoPath: project.repoPath,
-      model: project.model,
+      repoPath: effectiveRepoPath,
+      model: reviewerModel,
       permissionMode: project.permissionMode,
+      isSelfRepo: !!project.isSelfRepo,
     });
 
     if (exitCode !== 0) {
       return { outcome: "fail", error: `Reviewer exited with code ${exitCode}` };
     }
+
+    // Extract consultations from code reviewer output
+    await extractConsultations(output, pipelineId, "code_review");
 
     try {
       let jsonStr = output.trim();
@@ -734,6 +1007,35 @@ const stageHandlers: Record<string, StageHandler> = {
       if (m) jsonStr = m[1].trim();
 
       const verdict = JSON.parse(jsonStr);
+
+      // Store quality gate result for evolution tracking
+      stageRepo.update(stageId, { qualityGateResult: JSON.stringify(verdict) });
+
+      // Check churn metrics — auto-intervention on critical churn
+      if (verdict.churnMetrics?.verdict === "critical") {
+        consultationManager.requestConsultation({
+          pipelineId,
+          stageType: "code_review",
+          question: `Critical code churn detected (score: ${verdict.churnMetrics.churnScore}/10). ` +
+            `${verdict.churnMetrics.patchStyleFixes} patch-style fixes, ` +
+            `${verdict.churnMetrics.duplicatedCode} duplicated blocks. ` +
+            `Recommending replan to rebuild properly.`,
+          context: { churnMetrics: verdict.churnMetrics, findings: verdict.findings },
+        });
+
+        const response = await interventionManager.requestIntervention({
+          pipelineId,
+          stageType: "code_review",
+          question: "Critical code churn detected. Force proceed or replan for cleaner implementation?",
+          context: { churnMetrics: verdict.churnMetrics, summary: verdict.summary },
+        });
+
+        if (response === "proceed") {
+          return { outcome: "pass" };
+        }
+        return { outcome: "fail", error: `Critical churn: ${verdict.summary}` };
+      }
+
       if (verdict.verdict === "reject") {
         // Ask user whether to proceed despite code review rejection
         const response = await interventionManager.requestIntervention({
@@ -767,26 +1069,72 @@ const stageHandlers: Record<string, StageHandler> = {
     const project = projectRepo.getById(pipeline.projectId);
     if (!project) return { outcome: "fail", error: "Project not found" };
 
+    const effectiveRepoPath = getEffectiveRepoPath(project, pipeline);
+
     log.info({ pipelineId }, "Running git integration");
 
     try {
-      const status = commitManager.getStatus(project.repoPath);
+      // Self-repo: staging worktree is already on the right branch.
+      // Just commit whatever changes are in the worktree.
+      if (pipeline.selfWorktreePath) {
+        const status = commitManager.getStatus(effectiveRepoPath);
+        if (status.clean) {
+          log.info({ pipelineId }, "No changes to commit (self-repo)");
+          return { outcome: "pass" };
+        }
+        const hash = commitManager.commit(
+          effectiveRepoPath,
+          `feat: ${pipeline.requirements.slice(0, 72)}\n\nPipeline: ${pipelineId}\nAutomated by AWA-V (self-repo)`
+        );
+        log.info({ pipelineId, hash }, "Changes committed to self-repo staging branch");
+
+        const smoke = runPostMergeSmoke(effectiveRepoPath);
+        if (!smoke.ok) {
+          const response = await interventionManager.requestIntervention({
+            pipelineId,
+            stageType: "git_integration",
+            question: "Post-merge smoke checks failed. Proceed anyway, replan, or abort?",
+            context: { checks: smoke.checks, mode: "self_repo" },
+          });
+          if (response !== "proceed") {
+            return { outcome: "fail", error: "Post-merge smoke failed" };
+          }
+        }
+        return { outcome: "pass" };
+      }
+
+      // Normal flow
+      const status = commitManager.getStatus(effectiveRepoPath);
       if (status.clean) {
         log.info({ pipelineId }, "No changes to commit");
         return { outcome: "pass" };
       }
 
       const branchName = `awa-v/pipeline-${pipelineId.slice(0, 8)}`;
-      if (!branchManager.branchExists(project.repoPath, branchName)) {
-        branchManager.createBranch(project.repoPath, branchName);
+      if (!branchManager.branchExists(effectiveRepoPath, branchName)) {
+        branchManager.createBranch(effectiveRepoPath, branchName);
       }
 
       const hash = commitManager.commit(
-        project.repoPath,
+        effectiveRepoPath,
         `feat: ${pipeline.requirements.slice(0, 72)}\n\nPipeline: ${pipelineId}\nAutomated by AWA-V`
       );
 
       log.info({ pipelineId, hash, branch: branchName }, "Changes committed");
+
+      const smoke = runPostMergeSmoke(effectiveRepoPath);
+      if (!smoke.ok) {
+        const response = await interventionManager.requestIntervention({
+          pipelineId,
+          stageType: "git_integration",
+          question: "Post-merge smoke checks failed. Proceed anyway, replan, or abort?",
+          context: { checks: smoke.checks, branchName },
+        });
+        if (response !== "proceed") {
+          return { outcome: "fail", error: "Post-merge smoke failed" };
+        }
+      }
+
       return { outcome: "pass" };
     } catch (err) {
       return { outcome: "fail", error: (err as Error).message };
@@ -807,13 +1155,14 @@ const stageHandlers: Record<string, StageHandler> = {
 
     log.info({ pipelineId }, "Running evolution analysis");
 
-    memoryService.generateClaudeMdUpdate(pipeline.projectId, pipelineId);
+    memoryService.promotePipelineMemoriesToL2(pipeline.projectId, pipelineId);
 
     const analysis = await evolutionEngine.analyze(pipeline.projectId);
     if (analysis.recommendations.length > 0) {
       await evolutionEngine.applyRecommendations(
         pipeline.projectId,
-        analysis.recommendations
+        analysis.recommendations,
+        pipelineId
       );
     }
 

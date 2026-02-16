@@ -3,6 +3,10 @@ import { db, schema } from "../connection.js";
 import { nanoid } from "nanoid";
 
 export const pipelineRepo = {
+  getAll() {
+    return db.select().from(schema.pipelines).all();
+  },
+
   getByProject(projectId: string) {
     return db
       .select()
@@ -48,7 +52,13 @@ export const pipelineRepo = {
       totalCostUsd: number;
       totalInputTokens: number;
       totalOutputTokens: number;
+      tokenBreakdown: string;
+      currentModel: string;
+      selfWorktreePath: string;
+      selfMerged: number;
+      pausedFromState: string | null;
       reentryCount: number;
+      errorMessage: string | null;
     }>
   ) {
     const now = new Date().toISOString();

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { InterventionPanel } from "@/components/intervention/intervention-panel";
+import { UpdateBanner } from "@/components/layout/update-banner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +15,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-void antialiased">
+      <body className="min-h-screen bg-void antialiased" suppressHydrationWarning>
+        <UpdateBanner />
         {children}
         <InterventionPanel />
       </body>

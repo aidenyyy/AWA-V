@@ -3,7 +3,7 @@
 import { useNotificationStore } from "@/stores/notification-store";
 
 interface HeaderProps {
-  title: string;
+  title: React.ReactNode;
   subtitle?: string;
   actions?: React.ReactNode;
 }
@@ -19,7 +19,8 @@ export function Header({ title, subtitle, actions }: HeaderProps) {
         </h1>
         {subtitle && (
           <span className="text-xs text-text-muted font-mono">
-            // {subtitle}
+            {"// "}
+            {subtitle}
           </span>
         )}
       </div>

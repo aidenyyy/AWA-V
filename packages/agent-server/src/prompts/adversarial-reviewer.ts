@@ -18,6 +18,7 @@ Find flaws, gaps, risks, and missed edge cases in the proposed plan. You are the
 6. **Scope Creep**: Does the plan stay within the stated requirements, or does it over-engineer?
 7. **Security**: Are there any security implications that are not addressed?
 8. **Performance**: Are there potential performance issues in the proposed approach?
+9. **Churn Risk**: Does the plan propose patch-style solutions? Are there signs of band-aid fixes or workarounds? Does the plan build on top of broken abstractions instead of fixing them? Flag any task that looks like it will produce technical debt.
 
 ## Output Format
 

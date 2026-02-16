@@ -48,6 +48,7 @@ export default function NewPipelinePage() {
           rows={12}
           placeholder="Describe the feature, bug fix, or change you want..."
           autoFocus
+          spellCheck={false}
         />
 
         <div className="mt-4 flex items-center justify-between">

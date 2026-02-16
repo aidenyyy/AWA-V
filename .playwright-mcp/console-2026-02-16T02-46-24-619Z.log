@@ -1,0 +1,14 @@
+[  885547ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:2078/api/dashboard/stats:0
+[  900551ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:2078/api/dashboard/stats:0
+[  904705ms] [ERROR] WebSocket connection to 'ws://localhost:2078/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ webpack-internal:///(app-pages-browser)/./src/lib/ws-client.ts:11
+[  904705ms] [WARNING] [WS] Connection error, will reconnect... @ webpack-internal:///(app-pages-browser)/./src/lib/ws-client.ts:34
+[  914830ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:2078/api/pipelines/KyL5DmPmdkXv3OubJHLyL:0
+[  914842ms] Error: Internal Server Error
+    at request (webpack-internal:///(app-pages-browser)/./src/lib/api-client.ts:23:15)
+[  915540ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:2078/api/dashboard/stats:0
+[  921849ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:2078/api/pipelines/KyL5DmPmdkXv3OubJHLyL:0
+[  921859ms] Error: Internal Server Error
+    at request (webpack-internal:///(app-pages-browser)/./src/lib/api-client.ts:23:15)
+[  930542ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:2078/api/dashboard/stats:0
+[ 1800567ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:2078/api/dashboard/stats:0
+[ 2400576ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:2078/api/dashboard/stats:0

@@ -17,11 +17,14 @@ export interface SpawnOptions {
   maxTurns?: number;
   systemPrompt?: string;
   appendSystemPrompt?: string;
+  isSelfRepo?: boolean;
+  pipelineId?: string;
 }
 
 export interface ClaudeProcess {
   id: string;
   pid: number;
+  pipelineId?: string;
   process: ChildProcess;
   tracker: SessionTracker;
   events: EventEmitter;
@@ -71,6 +74,16 @@ export class ProcessManager {
     child.on("close", (code) => {
       const exitCode = code ?? 1;
       tracker.markCompleted(exitCode);
+
+      // If Claude exited non-zero with no output, surface stderr as an error
+      // so callers get a useful message instead of "exited with code 1"
+      if (exitCode !== 0 && stderrBuffer.trim() && tracker.getStats().outputTokens === 0) {
+        events.emit("chunk", {
+          type: "error" as const,
+          message: stderrBuffer.trim(),
+        });
+      }
+
       events.emit("chunk", {
         type: "done" as const,
         exitCode,
@@ -97,6 +110,7 @@ export class ProcessManager {
     const claudeProcess: ClaudeProcess = {
       id,
       pid: child.pid!,
+      pipelineId: options.pipelineId,
       process: child,
       tracker,
       events,
@@ -104,7 +118,8 @@ export class ProcessManager {
 
     this.processes.set(id, claudeProcess);
 
-    // Write prompt to stdin
+    // Deliver prompt via stdin to avoid argument parsing issues
+    // (prompts starting with "-" would be misinterpreted as CLI flags)
     if (child.stdin) {
       child.stdin.write(options.prompt);
       child.stdin.end();
@@ -118,7 +133,7 @@ export class ProcessManager {
       "--output-format",
       "stream-json",
       "--verbose",
-      "-p", options.prompt,
+      "-p",
     ];
 
     if (options.model) {
@@ -141,6 +156,21 @@ export class ProcessManager {
       args.push("--append-system-prompt", options.appendSystemPrompt);
     }
 
+    if (options.isSelfRepo) {
+      const guard = [
+        "\n\n## CRITICAL: Self-Repo Safety",
+        "This repository IS the AWA-V system that is currently running.",
+        "You are working in an isolated worktree — your changes will NOT affect the running server.",
+        "DO NOT modify: data/, .env*, node_modules/",
+        "DO NOT run git commands that target the main branch (no git checkout main, no git merge into main).",
+      ].join("\n");
+      if (options.appendSystemPrompt) {
+        options.appendSystemPrompt += guard;
+      } else {
+        args.push("--append-system-prompt", guard);
+      }
+    }
+
     if (options.skillPack) {
       args.push(...buildSkillArgs(options.skillPack));
     }
@@ -160,6 +190,69 @@ export class ProcessManager {
       }
     }, 5000);
     return true;
+  }
+
+  /** Kill all running processes (used during graceful shutdown) */
+  async killAll(): Promise<void> {
+    if (this.processes.size === 0) return;
+    log.info({ count: this.processes.size }, "Killing all Claude processes");
+
+    // Send SIGTERM to all
+    for (const [id, proc] of this.processes) {
+      proc.process.kill("SIGTERM");
+    }
+
+    // Wait for all to exit, with a 5s deadline
+    await Promise.race([
+      Promise.all(
+        Array.from(this.processes.values()).map(
+          (proc) =>
+            new Promise<void>((resolve) => {
+              if (proc.process.exitCode !== null) return resolve();
+              proc.process.once("close", () => resolve());
+            })
+        )
+      ),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+
+    // SIGKILL any remaining
+    for (const [id, proc] of this.processes) {
+      try {
+        proc.process.kill("SIGKILL");
+      } catch {
+        // Process may have already exited
+      }
+    }
+
+    this.processes.clear();
+  }
+
+  /** Kill all processes belonging to a specific pipeline */
+  killByPipeline(pipelineId: string): number {
+    let killed = 0;
+    for (const [id, proc] of this.processes) {
+      if (proc.pipelineId === pipelineId) {
+        proc.process.kill("SIGTERM");
+        killed++;
+      }
+    }
+    if (killed > 0) {
+      log.info({ pipelineId, killed }, "Killed processes for pipeline");
+      // Give processes 5s to exit gracefully, then SIGKILL any remaining
+      setTimeout(() => {
+        for (const [id, proc] of this.processes) {
+          if (proc.pipelineId === pipelineId) {
+            try {
+              proc.process.kill("SIGKILL");
+            } catch {
+              // Process may have already exited
+            }
+          }
+        }
+      }, 5000);
+    }
+    return killed;
   }
 
   /** Get a running process */

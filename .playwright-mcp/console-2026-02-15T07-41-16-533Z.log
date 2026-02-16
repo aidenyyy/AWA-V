@@ -1,0 +1,36 @@
+[    5975ms] [ERROR] In HTML, %s cannot be a descendant of <%s>.
+This will cause a hydration error.%s <button> button 
+
+  ...
+    <HTTPAccessFallbackBoundary notFound={undefined} forbidden={undefined} unauthorized={undefined}>
+      <RedirectBoundary>
+        <RedirectErrorBoundary router={{...}}>
+          <InnerLayoutRouter url="/skills" tree={[...]} cacheNode={{lazyData:null, ...}} segmentPath={[...]}>
+            <SegmentViewNode type="page" pagePath="skills/pag...">
+              <SegmentTrieNode>
+              <ClientPageRoot Component={function SkillsPage} searchParams={{}} params={{}}>
+                <SkillsPage params={Promise} searchParams={Promise}>
+                  <div className="flex min-h...">
+                    <Sidebar>
+                    <main className="ml-16 flex-1">
+                      <Header>
+                      <div className="mx-auto ma...">
+                        <div>
+                        <div>
+                        <div>
+                          <div className="mb-5 flex ...">
+>                           <button
+>                             onClick={function onClick}
+>                             className="group flex items-center gap-1.5 rounded-full border px-3 py-1.5 font-mono tex..."
+>                           >
+                              <span>
+                              <span>
+>                             <button
+>                               onClick={function onClick}
+>                               className="ml-1 hidden rounded-full p-0.5 text-text-muted hover:bg-neon-red/10 hover:t..."
+>                               title="Remove marketplace"
+>                             >
+                            ...
+            ...
+          ...
+ @ webpack-internal:///(app-pages-browser)/../../node_modules/.pnpm/next@15.5.12_react-dom@19.2.4_react@19.2.4__react@19.2.4/node_modules/next/dist/next-devtools/userspace/app/errors/intercept-console-error.js:56

@@ -8,7 +8,9 @@ import { registerSkillRoutes } from "./api/skills.js";
 import { registerSessionRoutes } from "./api/sessions.js";
 import { registerEvolutionRoutes } from "./api/evolution.js";
 import { registerInterventionRoutes } from "./api/interventions.js";
+import { registerConsultationRoutes } from "./api/consultations.js";
 import { registerFilesystemRoutes } from "./api/filesystem.js";
+import { registerPluginRoutes } from "./api/plugins.js";
 import { registerWebSocketHandler } from "./ws/handler.js";
 import { DEFAULTS } from "@awa-v/shared";
 
@@ -36,7 +38,9 @@ export async function createServer() {
   registerSessionRoutes(app);
   registerEvolutionRoutes(app);
   registerInterventionRoutes(app);
+  registerConsultationRoutes(app);
   registerFilesystemRoutes(app);
+  registerPluginRoutes(app);
   registerWebSocketHandler(app);
 
   // Health check

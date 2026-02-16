@@ -1,0 +1,2 @@
+[   15740ms] [WARNING] WebSocket connection to 'ws://localhost:2078/ws' failed: WebSocket is closed before the connection is established. @ webpack-internal:///(app-pages-browser)/./src/lib/ws-client.ts:42
+[   15743ms] [WARNING] [WS] Connection error, will reconnect... @ webpack-internal:///(app-pages-browser)/./src/lib/ws-client.ts:34

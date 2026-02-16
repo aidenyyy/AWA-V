@@ -236,7 +236,7 @@ export const planRepo = {
       .select()
       .from(schema.plans)
       .where(eq(schema.plans.pipelineId, pipelineId))
-      .orderBy(desc(schema.plans.version))
+      .orderBy(desc(schema.plans.version), desc(schema.plans.createdAt))
       .limit(1)
       .get();
     return row ? parsePlanJsonFields(row) : undefined;
@@ -259,12 +259,14 @@ export const planRepo = {
   }) {
     const now = new Date().toISOString();
     const id = nanoid();
+    const latest = this.getLatest(data.pipelineId);
+    const nextVersion = latest ? latest.version + 1 : 1;
 
     db.insert(schema.plans)
       .values({
         id,
         pipelineId: data.pipelineId,
-        version: data.version ?? 1,
+        version: data.version ?? nextVersion,
         content: data.content,
         taskBreakdown: JSON.stringify(data.taskBreakdown ?? []),
         createdAt: now,

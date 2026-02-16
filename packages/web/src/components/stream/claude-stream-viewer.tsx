@@ -112,10 +112,7 @@ function StreamChunkLine({ chunk }: { chunk: StreamChunk }) {
     case "cost:update":
       return (
         <div className="my-1 text-text-muted">
-          <span className="text-neon-yellow">
-            ${chunk.costUsd.toFixed(4)}
-          </span>{" "}
-          ({chunk.inputTokens}↓ {chunk.outputTokens}↑)
+          {chunk.inputTokens.toLocaleString()}&darr; {chunk.outputTokens.toLocaleString()}&uarr;
         </div>
       );
 

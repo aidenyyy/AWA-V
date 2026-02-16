@@ -4,9 +4,14 @@ async function request<T>(
   path: string,
   options?: RequestInit
 ): Promise<T> {
+  const headers: Record<string, string> = { ...options?.headers as Record<string, string> };
+  if (options?.body) {
+    headers["Content-Type"] = headers["Content-Type"] ?? "application/json";
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
+    headers,
   });
 
   if (!res.ok) {
@@ -38,6 +43,9 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/api/projects/${id}`, { method: "DELETE" }),
 
+  // Dashboard
+  getDashboardStats: () => request<unknown>("/api/dashboard/stats"),
+
   // Pipelines
   getPipelines: (projectId: string) =>
     request<unknown[]>(`/api/pipelines?projectId=${projectId}`),
@@ -51,6 +59,14 @@ export const api = {
     request<unknown>(`/api/pipelines/${id}/replan`, { method: "POST" }),
   cancelPipeline: (id: string) =>
     request<unknown>(`/api/pipelines/${id}/cancel`, { method: "POST" }),
+  pausePipeline: (id: string) =>
+    request<unknown>(`/api/pipelines/${id}/pause`, { method: "POST" }),
+  resumePipeline: (id: string) =>
+    request<unknown>(`/api/pipelines/${id}/resume`, { method: "POST" }),
+  getPendingSelfUpdates: () =>
+    request<unknown[]>("/api/pipelines/pending-self-updates"),
+  mergeSelfPipeline: (id: string) =>
+    request<{ message: string; branch: string }>(`/api/pipelines/${id}/merge-self`, { method: "POST" }),
 
   // Plans
   getPlans: (pipelineId: string) =>
@@ -70,6 +86,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  importSkillFromGithub: (url: string) =>
+    request<unknown>("/api/skills/import-github", {
+      method: "POST",
+      body: JSON.stringify({ githubUrl: url }),
+    }),
+  importSkillFromFile: (manifest: Record<string, unknown>) =>
+    request<unknown>("/api/skills/import-file", {
+      method: "POST",
+      body: JSON.stringify(manifest),
+    }),
+  toggleSkill: (id: string) =>
+    request<unknown>(`/api/skills/${id}/toggle`, {
+      method: "PATCH",
+      body: JSON.stringify({}),
+    }),
+  updateSkill: (id: string, data: Record<string, unknown>) =>
+    request<unknown>(`/api/skills/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
   approveSkill: (skillId: string) =>
     request<unknown>("/api/skills/approve", {
       method: "POST",
@@ -77,8 +113,15 @@ export const api = {
     }),
   deleteSkill: (id: string) =>
     request<void>(`/api/skills/${id}`, { method: "DELETE" }),
+  toggleSkillStar: (id: string) =>
+    request<unknown>(`/api/skills/${id}/star`, {
+      method: "PATCH",
+      body: JSON.stringify({}),
+    }),
 
   // Sessions
+  getSessionsForTask: (taskId: string) =>
+    request<unknown[]>(`/api/sessions?taskId=${taskId}`),
   getActiveSessions: () => request<unknown[]>("/api/sessions/active"),
   killSession: (id: string) =>
     request<unknown>(`/api/sessions/${id}/kill`, { method: "POST" }),
@@ -86,6 +129,8 @@ export const api = {
   // Evolution
   getEvolutionLogs: (projectId: string) =>
     request<unknown[]>(`/api/evolution?projectId=${projectId}`),
+  rollbackEvolution: (id: string) =>
+    request<unknown>(`/api/evolution/${id}/rollback`, { method: "POST" }),
   getMemoryStats: (projectId: string) =>
     request<unknown>(`/api/memory/stats?projectId=${projectId}`),
   getMemories: (projectId: string, layer?: string) =>
@@ -101,7 +146,7 @@ export const api = {
       entries: { name: string; path: string; isGitRepo: boolean }[];
     }>(`/api/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   detectRepos: () =>
-    request<{ name: string; path: string; isGitRepo: boolean }[]>(
+    request<{ name: string; path: string; isGitRepo: boolean; isSelf?: boolean }[]>(
       "/api/fs/detect-repos"
     ),
 
@@ -113,4 +158,46 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ response }),
     }),
+
+  // Plugins
+  getInstalledPlugins: () => request<unknown[]>("/api/plugins/installed"),
+  getAvailablePlugins: () => request<unknown[]>("/api/plugins/available"),
+  installPlugin: (pluginId: string) =>
+    request<unknown>("/api/plugins/install", {
+      method: "POST",
+      body: JSON.stringify({ pluginId }),
+    }),
+  uninstallPlugin: (pluginId: string) =>
+    request<unknown>("/api/plugins/uninstall", {
+      method: "POST",
+      body: JSON.stringify({ pluginId }),
+    }),
+  enablePlugin: (pluginId: string) =>
+    request<unknown>("/api/plugins/enable", {
+      method: "POST",
+      body: JSON.stringify({ pluginId }),
+    }),
+  disablePlugin: (pluginId: string) =>
+    request<unknown>("/api/plugins/disable", {
+      method: "POST",
+      body: JSON.stringify({ pluginId }),
+    }),
+  starPlugin: (pluginId: string) =>
+    request<unknown>("/api/plugins/star", {
+      method: "POST",
+      body: JSON.stringify({ pluginId }),
+    }),
+  unstarPlugin: (pluginId: string) =>
+    request<unknown>("/api/plugins/unstar", {
+      method: "POST",
+      body: JSON.stringify({ pluginId }),
+    }),
+  refreshPlugins: () =>
+    request<unknown[]>("/api/plugins/refresh", { method: "POST" }),
+  addMarketplace: (source: string) =>
+    request<unknown>("/api/plugins/marketplace/add", {
+      method: "POST",
+      body: JSON.stringify({ source }),
+    }),
+  getMarketplaces: () => request<unknown[]>("/api/plugins/marketplaces"),
 };

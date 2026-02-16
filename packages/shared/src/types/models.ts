@@ -15,6 +15,8 @@ export interface Project {
   model: string;
   maxBudgetUsd: number;
   permissionMode: string;
+  modelOverrides: string;
+  isSelfRepo: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -29,7 +31,13 @@ export interface Pipeline {
   totalCostUsd: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  tokenBreakdown: TokenBreakdown | string;
+  currentModel: string | null;
+  selfWorktreePath: string | null;
+  selfMerged: number;
+  pausedFromState: string | null;
   reentryCount: number;
+  errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -101,6 +109,38 @@ export interface PlanTaskBreakdown {
   domain: string;
   dependsOn: string[];
   canParallelize: boolean;
+  complexity: ModelTier;
+}
+
+// ─── Model Routing ─────────────────────────────────────────
+
+export type ModelTier = "low" | "medium" | "high";
+
+export type ModelId = "haiku" | "sonnet" | "opus";
+
+/** Maps complexity tier to default model */
+export const COMPLEXITY_MODEL_MAP: Record<ModelTier, ModelId> = {
+  low: "haiku",
+  medium: "sonnet",
+  high: "opus",
+};
+
+/** Default model per pipeline stage */
+export const STAGE_MODEL_MAP: Record<string, ModelId> = {
+  plan_generation: "sonnet",
+  adversarial_review: "sonnet",
+  testing: "sonnet",
+  code_review: "sonnet",
+  evolution_capture: "haiku",
+  claude_md_evolution: "haiku",
+  merge_resolve: "haiku",
+};
+
+/** Per-model token breakdown for cost tracking */
+export interface TokenBreakdown {
+  haiku: { input: number; output: number };
+  sonnet: { input: number; output: number };
+  opus: { input: number; output: number };
 }
 
 // ─── Skill ──────────────────────────────────────────────────
@@ -113,6 +153,11 @@ export interface Skill {
   tags: string[];
   type: SkillType;
   status: SkillStatus;
+  instructions: string;
+  manifestUrl: string;
+  sourceKind: "builtin" | "github" | "manual";
+  pluginDir: string;
+  starred: number; // 0 = not starred, 1 = starred
   installedAt: string;
 }
 
@@ -134,7 +179,11 @@ export interface Memory {
 
 // ─── Evolution Log ──────────────────────────────────────────
 
-export type EvolutionActionType = "claude_md_update" | "config_change";
+export type EvolutionActionType =
+  | "config_change"
+  | "model_routing"
+  | "skill_suggestion"
+  | "prompt_improvement";
 
 export interface EvolutionLog {
   id: string;
@@ -161,6 +210,48 @@ export interface Intervention {
   response: string | null;
   createdAt: string;
   resolvedAt: string | null;
+}
+
+// ─── Consultation ──────────────────────────────────────────
+
+export type ConsultationStatus = "pending" | "answered" | "expired";
+
+export interface Consultation {
+  id: string;
+  pipelineId: string;
+  taskId: string | null;
+  stageType: string;
+  question: string;
+  context: string; // JSON
+  blocking: number; // 0=consult (fire-and-forget), 1=block (parks execution)
+  status: ConsultationStatus;
+  response: string | null;
+  createdAt: string;
+  answeredAt: string | null;
+}
+
+// ─── Generated Tool ───────────────────────────────────────
+
+export interface GeneratedTool {
+  id: string;
+  pipelineId: string;
+  taskId: string;
+  name: string;
+  description: string;
+  pluginDir: string;
+  sourceCode: string;
+  createdAt: string;
+}
+
+// ─── Churn Metrics ────────────────────────────────────────
+
+export interface ChurnMetrics {
+  churnScore: number; // 0-10, higher = more churn
+  patchStyleFixes: number;
+  duplicatedCode: number;
+  temporaryWorkarounds: number;
+  missingAbstractions: number;
+  verdict: "clean" | "warning" | "critical";
 }
 
 // ─── Skill Pack (runtime) ───────────────────────────────────

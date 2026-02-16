@@ -3,30 +3,35 @@
 import { cn } from "@/lib/cn";
 
 interface CostBadgeProps {
-  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
   className?: string;
   size?: "sm" | "md";
 }
 
-export function CostBadge({ costUsd, className, size = "sm" }: CostBadgeProps) {
-  const formatted = costUsd < 0.01
-    ? "<$0.01"
-    : `$${costUsd.toFixed(2)}`;
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+export function CostBadge({ inputTokens, outputTokens, className, size = "sm" }: CostBadgeProps) {
+  const total = inputTokens + outputTokens;
 
   return (
     <span
       className={cn(
-        "inline-flex items-center font-mono",
+        "inline-flex items-center gap-1 font-mono",
         size === "sm" ? "text-[10px]" : "text-xs",
-        costUsd > 1
+        total > 100_000
           ? "text-neon-yellow"
-          : costUsd > 5
+          : total > 500_000
             ? "text-neon-red"
             : "text-text-muted",
         className
       )}
     >
-      {formatted}
+      {formatTokens(inputTokens)}&darr; {formatTokens(outputTokens)}&uarr;
     </span>
   );
 }

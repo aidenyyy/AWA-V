@@ -10,8 +10,11 @@ interface PatternCardProps {
 }
 
 export function PatternCard({ log, isSelected, onSelect }: PatternCardProps) {
-  const isClaudeMd = log.actionType === "claude_md_update";
+  const isInsight =
+    log.actionType === "prompt_improvement" || log.actionType === "skill_suggestion";
+  const isModelRouting = log.actionType === "model_routing";
   const relativeTime = getRelativeTime(log.appliedAt);
+  const status = getConfigStatus(log);
 
   return (
     <button
@@ -19,8 +22,10 @@ export function PatternCard({ log, isSelected, onSelect }: PatternCardProps) {
       className={cn(
         "glass-card w-full p-4 text-left transition",
         isSelected &&
-          (isClaudeMd
+          (isInsight
             ? "border-neon-green/40 shadow-[0_0_12px_rgba(0,255,136,0.08)]"
+            : isModelRouting
+            ? "border-neon-cyan/40 shadow-[0_0_12px_rgba(0,255,255,0.08)]"
             : "border-neon-yellow/40 shadow-[0_0_12px_rgba(255,170,0,0.08)]")
       )}
     >
@@ -29,12 +34,38 @@ export function PatternCard({ log, isSelected, onSelect }: PatternCardProps) {
         <span
           className={cn(
             "font-mono text-[10px] uppercase tracking-widest",
-            isClaudeMd ? "text-neon-green" : "text-neon-yellow"
+            isInsight
+              ? "text-neon-green"
+              : isModelRouting
+              ? "text-neon-cyan"
+              : "text-neon-yellow"
           )}
         >
-          {isClaudeMd ? "CLAUDE.MD UPDATE" : "CONFIG CHANGE"}
+          {isInsight
+            ? "INSIGHT UPDATE"
+            : isModelRouting
+            ? "MODEL ROUTING"
+            : "CONFIG CHANGE"}
         </span>
-        <span className="text-[10px] font-mono text-text-muted">{relativeTime}</span>
+        <div className="flex items-center gap-2">
+          {status && (
+            <span
+              className={cn(
+                "text-[10px] font-mono px-1.5 py-0.5 rounded",
+                status === "applied" && "bg-neon-green/10 text-neon-green",
+                status === "rejected" && "bg-neon-red/10 text-neon-red",
+                status === "rolled_back" && "bg-neon-magenta/10 text-neon-magenta"
+              )}
+            >
+              {status === "applied"
+                ? "APPLIED"
+                : status === "rejected"
+                ? "REJECTED"
+                : "ROLLED BACK"}
+            </span>
+          )}
+          <span className="text-[10px] font-mono text-text-muted">{relativeTime}</span>
+        </div>
       </div>
 
       {/* Pattern description */}
@@ -58,6 +89,22 @@ export function PatternCard({ log, isSelected, onSelect }: PatternCardProps) {
       )}
     </button>
   );
+}
+
+function getConfigStatus(
+  log: EvolutionLog
+): "applied" | "rejected" | "rolled_back" | null {
+  if (log.rolledBackAt) return "rolled_back";
+  if (log.actionType !== "config_change" && log.actionType !== "model_routing") return null;
+
+  try {
+    const diff = JSON.parse(log.diff);
+    if (diff.applied) return "applied";
+    if (diff.rejected) return "rejected";
+  } catch {
+    // not structured JSON
+  }
+  return null;
 }
 
 function getRelativeTime(isoDate: string): string {

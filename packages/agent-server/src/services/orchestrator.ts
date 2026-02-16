@@ -76,6 +76,7 @@ class Orchestrator {
     const claudeProcess = processManager.spawn(session.id, {
       prompt: pipeline.requirements,
       cwd: project.repoPath,
+      pipelineId,
       model: project.model,
       permissionMode: project.permissionMode,
       systemPrompt: PLANNER_PROMPT,
@@ -417,6 +418,7 @@ class Orchestrator {
     const claudeProcess = processManager.spawn(session.id, {
       prompt,
       cwd: project.repoPath,
+      pipelineId,
       model: project.model,
       permissionMode: project.permissionMode,
       skillPack: skillPack.skills.length > 0 ? skillPack : undefined,

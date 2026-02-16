@@ -34,10 +34,9 @@ const COLUMNS = [
     accent: "border-neon-magenta",
   },
   {
-    key: "preparing",
-    title: "Preparing",
+    key: PipelineState.CONTEXT_PREP,
+    title: "Context Prep",
     accent: "border-neon-blue",
-    states: [PipelineState.SKILL_DISTRIBUTION, PipelineState.MEMORY_INJECTION],
   },
   {
     key: PipelineState.PARALLEL_EXECUTION,
@@ -82,13 +81,24 @@ export function KanbanBoard({ pipelines, projectId }: KanbanBoardProps) {
     });
   }, [pipelines]);
 
-  // Also show failed/cancelled in a special area
+  // Also show failed/cancelled/paused in a special area
   const failedPipelines = pipelines.filter(
     (p) => p.state === "failed" || p.state === "cancelled"
+  );
+  const pausedPipelines = pipelines.filter(
+    (p) => p.state === "paused"
   );
 
   return (
     <div className="flex h-full gap-3 overflow-x-auto p-4">
+      {/* Quick-add button */}
+      <a
+        href={`/projects/${projectId}/pipelines/new`}
+        className="flex flex-shrink-0 items-center justify-center rounded-lg border border-dashed border-border/50 px-4 font-mono text-xs text-text-muted transition hover:border-neon-cyan/40 hover:text-neon-cyan"
+      >
+        + Pipeline
+      </a>
+
       {columns.map((col) => (
         <KanbanColumn
           key={col.key}
@@ -97,17 +107,41 @@ export function KanbanBoard({ pipelines, projectId }: KanbanBoardProps) {
           accentColor={col.accent}
           isActionColumn={"isAction" in col && col.isAction}
         >
-          {col.items.map((pipeline) => (
+          {col.items.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center py-8">
+              <span className="font-mono text-[10px] text-text-muted/50">&mdash;</span>
+            </div>
+          ) : (
+            col.items.map((pipeline) => (
+              <PipelineCard
+                key={pipeline.id}
+                pipeline={pipeline}
+                projectId={projectId}
+                isActionRequired={pipeline.state === "human_review"}
+                progress={estimateProgress(pipeline.state)}
+              />
+            ))
+          )}
+        </KanbanColumn>
+      ))}
+
+      {/* Paused column */}
+      {pausedPipelines.length > 0 && (
+        <KanbanColumn
+          title="Paused"
+          count={pausedPipelines.length}
+          accentColor="border-neon-yellow"
+        >
+          {pausedPipelines.map((pipeline) => (
             <PipelineCard
               key={pipeline.id}
               pipeline={pipeline}
               projectId={projectId}
-              isActionRequired={pipeline.state === "human_review"}
-              progress={estimateProgress(pipeline.state)}
+              progress={0}
             />
           ))}
         </KanbanColumn>
-      ))}
+      )}
 
       {/* Failed/Cancelled column */}
       {failedPipelines.length > 0 && (
@@ -136,8 +170,7 @@ function estimateProgress(state: string): number {
     plan_generation: 15,
     human_review: 25,
     adversarial_review: 35,
-    skill_distribution: 40,
-    memory_injection: 45,
+    context_prep: 45,
     parallel_execution: 60,
     testing: 75,
     code_review: 85,
@@ -147,6 +180,7 @@ function estimateProgress(state: string): number {
     completed: 100,
     failed: 0,
     cancelled: 0,
+    paused: 0,
   };
   return progressMap[state] ?? 0;
 }

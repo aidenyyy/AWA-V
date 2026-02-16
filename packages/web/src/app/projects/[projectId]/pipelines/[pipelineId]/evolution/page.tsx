@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api-client";
 import { EvolutionTimeline } from "@/components/evolution/evolution-timeline";
-import { ClaudeMdDiff } from "@/components/evolution/claude-md-diff";
 import type { EvolutionLog } from "@awa-v/shared";
 
 export default function EvolutionPage() {
@@ -17,15 +16,38 @@ export default function EvolutionPage() {
     l2Count: number;
     l3Count: number;
   } | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
 
-  useEffect(() => {
+  const refreshLogs = useCallback(() => {
     api.getEvolutionLogs(projectId).then((l) => setLogs(l as EvolutionLog[]));
-    api.getMemoryStats(projectId).then((s) => setStats(s as any));
   }, [projectId]);
 
+  useEffect(() => {
+    refreshLogs();
+    api.getMemoryStats(projectId).then((s) => setStats(s as any));
+  }, [projectId, refreshLogs]);
+
   const selectedLog = logs.find((l) => l.id === selectedLogId);
-  const claudeMdLogs = logs.filter((l) => l.actionType === "claude_md_update");
+  const insightLogs = logs.filter(
+    (l) => l.actionType === "prompt_improvement" || l.actionType === "skill_suggestion"
+  );
   const configLogs = logs.filter((l) => l.actionType === "config_change");
+  const routingLogs = logs.filter((l) => l.actionType === "model_routing");
+
+  const handleRollback = async (logId: string) => {
+    setRollingBack(true);
+    try {
+      await api.rollbackEvolution(logId);
+      refreshLogs();
+    } catch {
+      // Error handled by api-client
+    } finally {
+      setRollingBack(false);
+    }
+  };
+
+  // Parse structured diff for config/routing changes
+  const parsedDiff = selectedLog ? parseConfigDiff(selectedLog) : null;
 
   return (
     <div className="mx-auto max-w-6xl p-6">
@@ -58,13 +80,19 @@ export default function EvolutionPage() {
         <div className="flex items-center gap-2">
           <span className="indicator indicator-active" />
           <span className="text-xs font-mono text-text-secondary">
-            {claudeMdLogs.length} CLAUDE.md updates
+            {insightLogs.length} insight updates
           </span>
         </div>
         <div className="flex items-center gap-2">
           <span className="indicator indicator-warning" />
           <span className="text-xs font-mono text-text-secondary">
             {configLogs.length} config changes
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="indicator" style={{ backgroundColor: "var(--neon-cyan, #0ff)" }} />
+          <span className="text-xs font-mono text-text-secondary">
+            {routingLogs.length} model routing
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -94,14 +122,22 @@ export default function EvolutionPage() {
                 <div className="flex items-center justify-between mb-3">
                   <span
                     className={`font-mono text-[10px] uppercase tracking-widest ${
-                      selectedLog.actionType === "claude_md_update"
+                      selectedLog.actionType === "prompt_improvement" ||
+                      selectedLog.actionType === "skill_suggestion"
                         ? "text-neon-green"
+                        : selectedLog.actionType === "model_routing"
+                        ? "text-neon-cyan"
                         : "text-neon-yellow"
                     }`}
                   >
-                    {selectedLog.actionType === "claude_md_update"
-                      ? "CLAUDE.MD UPDATE"
-                      : "CONFIG CHANGE"}
+                    {selectedLog.actionType === "model_routing"
+                      ? "MODEL ROUTING"
+                      : selectedLog.actionType === "config_change"
+                      ? "CONFIG CHANGE"
+                      : selectedLog.actionType === "skill_suggestion"
+                      ? "SKILL SUGGESTION"
+                      : "PROMPT IMPROVEMENT"
+                    }
                   </span>
                   <button
                     onClick={() => setSelectedLogId(null)}
@@ -115,6 +151,31 @@ export default function EvolutionPage() {
                   {selectedLog.patternDescription}
                 </p>
 
+                {/* Status badge */}
+                {parsedDiff && (
+                  <div className="mb-2">
+                    <span
+                      className={`inline-block text-[10px] font-mono px-2 py-0.5 rounded ${
+                        selectedLog.rolledBackAt
+                          ? "bg-neon-magenta/10 text-neon-magenta"
+                          : parsedDiff.applied
+                          ? "bg-neon-green/10 text-neon-green"
+                          : parsedDiff.rejected
+                          ? "bg-neon-red/10 text-neon-red"
+                          : "bg-white/5 text-text-muted"
+                      }`}
+                    >
+                      {selectedLog.rolledBackAt
+                        ? "ROLLED BACK"
+                        : parsedDiff.applied
+                        ? "APPLIED"
+                        : parsedDiff.rejected
+                        ? "REJECTED"
+                        : "RECORDED"}
+                    </span>
+                  </div>
+                )}
+
                 <div className="text-[10px] font-mono text-text-muted">
                   Applied: {new Date(selectedLog.appliedAt).toLocaleString()}
                 </div>
@@ -124,11 +185,67 @@ export default function EvolutionPage() {
                     Triggered by pipeline: {selectedLog.triggerPipelineId.slice(0, 8)}
                   </div>
                 )}
+
+                {selectedLog.rolledBackAt && (
+                  <div className="mt-1 text-[10px] font-mono text-neon-magenta">
+                    Rolled back: {new Date(selectedLog.rolledBackAt).toLocaleString()}
+                  </div>
+                )}
               </div>
 
-              {/* Diff viewer */}
+              {/* Config change details */}
+              {parsedDiff && (parsedDiff.changes || parsedDiff.previousValues) && (
+                <div className="glass-card p-4">
+                  <div className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-3">
+                    Config Changes
+                  </div>
+                  {parsedDiff.previousValues && parsedDiff.changes && (
+                    <div className="space-y-2">
+                      {Object.entries(parsedDiff.changes).map(([key, newVal]) => {
+                        const oldVal = parsedDiff.previousValues?.[key];
+                        return (
+                          <div key={key} className="flex items-center justify-between">
+                            <span className="text-xs font-mono text-text-secondary">{key}</span>
+                            <div className="flex items-center gap-2 text-xs font-mono">
+                              {oldVal !== undefined && (
+                                <>
+                                  <span className="text-neon-red/80 line-through">
+                                    {typeof oldVal === "object" ? JSON.stringify(oldVal) : String(oldVal)}
+                                  </span>
+                                  <span className="text-text-muted">&rarr;</span>
+                                </>
+                              )}
+                              <span className="text-neon-green">
+                                {typeof newVal === "object" ? JSON.stringify(newVal) : String(newVal)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Rollback button */}
+              {parsedDiff?.applied &&
+                !selectedLog.rolledBackAt &&
+                (selectedLog.actionType === "config_change" ||
+                  selectedLog.actionType === "model_routing") && (
+                <button
+                  onClick={() => handleRollback(selectedLog.id)}
+                  disabled={rollingBack}
+                  className="w-full glass-card p-3 text-center text-xs font-mono text-neon-red hover:border-neon-red/40 hover:shadow-[0_0_12px_rgba(255,0,0,0.08)] transition disabled:opacity-50"
+                >
+                  {rollingBack ? "Rolling back..." : "Rollback Change"}
+                </button>
+              )}
+
+              {/* Raw recommendation payload */}
               {selectedLog.diff && (
-                <ClaudeMdDiff diff={selectedLog.diff} />
+                <pre className="glass-card max-h-[280px] overflow-auto whitespace-pre-wrap p-4 text-[11px] text-text-secondary">
+                  {selectedLog.diff}
+                </pre>
               )}
             </div>
           ) : (
@@ -142,4 +259,25 @@ export default function EvolutionPage() {
       </div>
     </div>
   );
+}
+
+/** Parse config/routing diff JSON to extract structured data */
+function parseConfigDiff(log: EvolutionLog): {
+  applied: boolean;
+  rejected: boolean;
+  changes: Record<string, unknown> | null;
+  previousValues: Record<string, unknown> | null;
+} | null {
+  if (log.actionType !== "config_change" && log.actionType !== "model_routing") return null;
+  try {
+    const diff = JSON.parse(log.diff);
+    return {
+      applied: !!diff.applied,
+      rejected: !!diff.rejected,
+      changes: diff.changes ?? null,
+      previousValues: diff.previousValues ?? null,
+    };
+  } catch {
+    return null;
+  }
 }

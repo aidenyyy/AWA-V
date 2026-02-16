@@ -9,6 +9,7 @@
     "build": "tsc",
     "start:built": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push"

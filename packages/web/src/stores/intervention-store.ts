@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { immer } from "zustand/middleware/immer";
 import type { Intervention } from "@awa-v/shared";
 
@@ -53,18 +54,18 @@ export const useInterventionStore = create<InterventionState>()(
         }
       }),
 
-    resolveIntervention: (id, intervention) =>
+    resolveIntervention: (id, intervention) => {
       set((state) => {
         const idx = state.interventions.findIndex((i) => i.id === id);
         if (idx !== -1) {
           state.interventions[idx] = intervention;
         }
-        // Clean up draft for resolved intervention
         if (state.drafts[id]) {
           delete state.drafts[id];
-          persistDrafts(state.drafts);
         }
-      }),
+      });
+      persistDrafts(get().drafts);
+    },
 
     openPanel: (pipelineId) =>
       set((state) => {
@@ -78,11 +79,12 @@ export const useInterventionStore = create<InterventionState>()(
         state.activePipelineId = null;
       }),
 
-    setDraft: (interventionId, text) =>
+    setDraft: (interventionId, text) => {
       set((state) => {
         state.drafts[interventionId] = text;
-        persistDrafts(state.drafts);
-      }),
+      });
+      persistDrafts(get().drafts);
+    },
 
     getDraft: (interventionId) => {
       return get().drafts[interventionId] ?? "";
@@ -101,9 +103,11 @@ export function getPendingByPipeline(pipelineId: string) {
 }
 
 export function usePendingByPipeline(pipelineId: string) {
-  return useInterventionStore((s) =>
-    s.interventions.filter(
-      (i) => i.pipelineId === pipelineId && i.status === "pending"
+  return useInterventionStore(
+    useShallow((s) =>
+      s.interventions.filter(
+        (i) => i.pipelineId === pipelineId && i.status === "pending"
+      )
     )
   );
 }

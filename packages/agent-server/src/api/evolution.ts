@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { evolutionRepo } from "../db/repositories/evolution-repo.js";
+import { projectRepo } from "../db/repositories/project-repo.js";
 import { memoryRepo } from "../db/repositories/memory-repo.js";
 
 export function registerEvolutionRoutes(app: FastifyInstance) {
@@ -9,6 +10,42 @@ export function registerEvolutionRoutes(app: FastifyInstance) {
     async (req) => {
       const logs = evolutionRepo.getByProject(req.query.projectId);
       return { data: logs };
+    }
+  );
+
+  // Rollback an evolution change
+  app.post<{ Params: { id: string } }>(
+    "/api/evolution/:id/rollback",
+    async (req, reply) => {
+      const log = evolutionRepo.getById(req.params.id);
+      if (!log) return reply.code(404).send({ error: "Not found" });
+      if (log.rolledBackAt) return reply.code(400).send({ error: "Already rolled back" });
+
+      if (log.actionType === "config_change") {
+        try {
+          const diffData = JSON.parse(log.diff);
+          if (diffData.applied && diffData.previousValues) {
+            projectRepo.update(log.projectId, diffData.previousValues);
+          }
+        } catch {
+          return reply.code(400).send({ error: "Could not parse rollback data" });
+        }
+      } else if (log.actionType === "model_routing") {
+        try {
+          const diffData = JSON.parse(log.diff);
+          if (diffData.applied && diffData.previousValues) {
+            const previousOverrides = typeof diffData.previousValues === "string"
+              ? diffData.previousValues
+              : JSON.stringify(diffData.previousValues);
+            projectRepo.update(log.projectId, { modelOverrides: previousOverrides });
+          }
+        } catch {
+          return reply.code(400).send({ error: "Could not parse rollback data" });
+        }
+      }
+
+      evolutionRepo.markRolledBack(log.id);
+      return { data: evolutionRepo.getById(log.id) };
     }
   );
 

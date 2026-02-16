@@ -21,6 +21,7 @@ export const projectRepo = {
     model?: string;
     maxBudgetUsd?: number;
     permissionMode?: string;
+    isSelfRepo?: boolean;
   }) {
     const now = new Date().toISOString();
     const id = nanoid();
@@ -33,6 +34,7 @@ export const projectRepo = {
         model: data.model ?? "sonnet",
         maxBudgetUsd: data.maxBudgetUsd ?? 10,
         permissionMode: data.permissionMode ?? "default",
+        isSelfRepo: data.isSelfRepo ? 1 : 0,
         createdAt: now,
         updatedAt: now,
       })
@@ -49,6 +51,7 @@ export const projectRepo = {
       model: string;
       maxBudgetUsd: number;
       permissionMode: string;
+      modelOverrides: string;
     }>
   ) {
     const now = new Date().toISOString();

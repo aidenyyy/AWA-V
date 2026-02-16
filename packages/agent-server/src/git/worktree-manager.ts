@@ -64,6 +64,7 @@ class WorktreeManager {
 
     try {
       execFileSync("git", ["worktree", "remove", worktreePath, "--force"], {
+        cwd: worktreePath,
         stdio: "pipe",
       });
       log.info({ worktreePath }, "Worktree removed");

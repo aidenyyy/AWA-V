@@ -1,19 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
 import { api } from "@/lib/api-client";
 import { usePipelineStore } from "@/stores/pipeline-store";
 import type { Pipeline } from "@awa-v/shared";
+import { useShallow } from "zustand/react/shallow";
 
 export default function ProjectKanbanPage() {
   const params = useParams();
   const projectId = params.projectId as string;
   const [loading, setLoading] = useState(true);
   const setPipelines = usePipelineStore((s) => s.setPipelines);
-  const pipelines = usePipelineStore((s) =>
-    Object.values(s.pipelines).filter((p) => p.projectId === projectId)
+  const pipelineMap = usePipelineStore(useShallow((s) => s.pipelines));
+  const pipelines = useMemo(
+    () => Object.values(pipelineMap).filter((p) => p.projectId === projectId),
+    [pipelineMap, projectId]
   );
 
   useEffect(() => {

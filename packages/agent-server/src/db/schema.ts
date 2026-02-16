@@ -9,6 +9,8 @@ export const projects = sqliteTable("projects", {
   model: text("model").notNull().default("sonnet"),
   maxBudgetUsd: real("max_budget_usd").notNull().default(10),
   permissionMode: text("permission_mode").notNull().default("default"),
+  modelOverrides: text("model_overrides").notNull().default('{}'),
+  isSelfRepo: integer("is_self_repo").notNull().default(0),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -25,7 +27,13 @@ export const pipelines = sqliteTable("pipelines", {
   totalCostUsd: real("total_cost_usd").notNull().default(0),
   totalInputTokens: integer("total_input_tokens").notNull().default(0),
   totalOutputTokens: integer("total_output_tokens").notNull().default(0),
+  tokenBreakdown: text("token_breakdown").notNull().default('{"haiku":{"input":0,"output":0},"sonnet":{"input":0,"output":0},"opus":{"input":0,"output":0}}'), // JSON: TokenBreakdown
+  currentModel: text("current_model"), // model currently being used by active stage
+  selfWorktreePath: text("self_worktree_path"),
+  selfMerged: integer("self_merged").notNull().default(0),
+  pausedFromState: text("paused_from_state"),
   reentryCount: integer("reentry_count").notNull().default(0),
+  errorMessage: text("error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -110,7 +118,31 @@ export const skills = sqliteTable("skills", {
   tags: text("tags").notNull().default("[]"), // JSON array
   type: text("type").notNull().default("builtin"),
   status: text("status").notNull().default("active"),
+  instructions: text("instructions").notNull().default(""),
+  manifestUrl: text("manifest_url").notNull().default(""),
+  sourceKind: text("source_kind").notNull().default("manual"), // builtin | github | manual
+  pluginDir: text("plugin_dir").notNull().default(""),
+  starred: integer("starred").notNull().default(0), // 0 = not starred, 1 = starred
   installedAt: text("installed_at").notNull(),
+});
+
+// ─── Starred Plugins ──────────────────────────────────────
+// Plugins are managed by Claude CLI, so we only track starred state here.
+
+export const starredPlugins = sqliteTable("starred_plugins", {
+  pluginId: text("plugin_id").primaryKey(),
+  starredAt: text("starred_at").notNull(),
+});
+
+// ─── Skill Marketplaces ────────────────────────────────────
+
+export const skillMarketplaces = sqliteTable("skill_marketplaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  lastFetched: text("last_fetched"),
+  skillCount: integer("skill_count").notNull().default(0),
+  addedAt: text("added_at").notNull(),
 });
 
 // ─── Memory ─────────────────────────────────────────────────
@@ -142,6 +174,56 @@ export const interventions = sqliteTable("interventions", {
   response: text("response"),
   createdAt: text("created_at").notNull(),
   resolvedAt: text("resolved_at"),
+});
+
+// ─── Consultations ────────────────────────────────────────
+
+export const consultations = sqliteTable("consultations", {
+  id: text("id").primaryKey(),
+  pipelineId: text("pipeline_id")
+    .notNull()
+    .references(() => pipelines.id),
+  taskId: text("task_id").references(() => tasks.id),
+  stageType: text("stage_type").notNull(),
+  question: text("question").notNull(),
+  context: text("context").notNull(), // JSON
+  blocking: integer("blocking").notNull().default(0), // 0=consult, 1=block
+  status: text("status").notNull().default("pending"), // pending | answered | expired
+  response: text("response"),
+  createdAt: text("created_at").notNull(),
+  answeredAt: text("answered_at"),
+});
+
+// ─── Generated Tools ──────────────────────────────────────
+
+export const generatedTools = sqliteTable("generated_tools", {
+  id: text("id").primaryKey(),
+  pipelineId: text("pipeline_id")
+    .notNull()
+    .references(() => pipelines.id),
+  taskId: text("task_id")
+    .notNull()
+    .references(() => tasks.id),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  pluginDir: text("plugin_dir").notNull(),
+  sourceCode: text("source_code").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+// ─── Model Performance ─────────────────────────────────────
+
+export const modelPerformance = sqliteTable("model_performance", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  taskType: text("task_type").notNull(), // agentRole (executor, tester, etc.)
+  complexity: text("complexity").notNull(), // low/medium/high
+  model: text("model").notNull(), // haiku/sonnet/opus
+  succeeded: integer("succeeded").notNull(), // 1 or 0
+  tokenCount: integer("token_count").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 // ─── Evolution Logs ─────────────────────────────────────────

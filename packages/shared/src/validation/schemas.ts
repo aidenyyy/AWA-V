@@ -34,14 +34,31 @@ export const planReviewSchema = z.object({
 // ─── Skills ─────────────────────────────────────────────────
 
 export const importSkillSchema = z.object({
-  sourceUrl: z.string().url(),
+  sourceUrl: z.string().url().optional(),
+  githubUrl: z.string().url().optional(),
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(1000).optional(),
   tags: z.array(z.string()).optional(),
+  instructions: z.string().max(10000).optional(),
 });
 
 export const approveSkillSchema = z.object({
   skillId: z.string().min(1),
+});
+
+export const skillManifestSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()),
+  instructions: z.string(),
+  pluginDir: z.string().optional(),
+  version: z.string().optional(),
+});
+
+export const marketplaceManifestSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  skills: z.array(skillManifestSchema),
 });
 
 // ─── Task Breakdown ─────────────────────────────────────────
@@ -53,6 +70,7 @@ export const planTaskBreakdownSchema = z.object({
   domain: z.string().min(1),
   dependsOn: z.array(z.string()),
   canParallelize: z.boolean(),
+  complexity: z.enum(["low", "medium", "high"]).default("medium"),
 });
 
 // ─── WebSocket ──────────────────────────────────────────────

@@ -33,8 +33,10 @@ export function EvolutionTimeline({
             {/* Timeline node */}
             <div
               className={`absolute left-[8px] top-3 h-[14px] w-[14px] rounded-full border-2 ${
-                log.actionType === "claude_md_update"
+                log.actionType === "prompt_improvement" || log.actionType === "skill_suggestion"
                   ? "border-neon-green bg-neon-green/20"
+                  : log.actionType === "model_routing"
+                  ? "border-neon-cyan bg-neon-cyan/20"
                   : "border-neon-yellow bg-neon-yellow/20"
               } ${
                 selectedId === log.id

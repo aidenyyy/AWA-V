@@ -1,4 +1,4 @@
-import type { Pipeline, Stage, Task, ClaudeSession, Plan, Intervention } from "./models";
+import type { Pipeline, Stage, Task, ClaudeSession, Plan, Intervention, Consultation } from "./models";
 
 // ─── Client → Server ───────────────────────────────────────
 
@@ -25,6 +25,8 @@ export type ServerEvent =
     }
   | { type: "intervention:requested"; intervention: Intervention }
   | { type: "intervention:resolved"; intervention: Intervention }
+  | { type: "consultation:requested"; consultation: Consultation }
+  | { type: "consultation:answered"; consultation: Consultation }
   | {
       type: "notification";
       level: "info" | "warning" | "error";

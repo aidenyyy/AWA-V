@@ -37,6 +37,15 @@ export const skillRepo = {
     );
   },
 
+  getByName(name: string) {
+    const row = db
+      .select()
+      .from(schema.skills)
+      .where(eq(schema.skills.name, name))
+      .get();
+    return row ? parseSkillJsonFields(row) : undefined;
+  },
+
   create(data: {
     name: string;
     description?: string;
@@ -44,6 +53,11 @@ export const skillRepo = {
     tags?: string[];
     type?: string;
     status?: string;
+    instructions?: string;
+    manifestUrl?: string;
+    sourceKind?: string;
+    pluginDir?: string;
+    starred?: number;
   }) {
     const now = new Date().toISOString();
     const id = nanoid();
@@ -57,6 +71,11 @@ export const skillRepo = {
         tags: JSON.stringify(data.tags ?? []),
         type: data.type ?? "builtin",
         status: data.status ?? "active",
+        instructions: data.instructions ?? "",
+        manifestUrl: data.manifestUrl ?? "",
+        sourceKind: data.sourceKind ?? "manual",
+        pluginDir: data.pluginDir ?? "",
+        starred: data.starred ?? 0,
         installedAt: now,
       })
       .run();
@@ -73,6 +92,11 @@ export const skillRepo = {
       tags: string[];
       type: string;
       status: string;
+      instructions: string;
+      manifestUrl: string;
+      sourceKind: string;
+      pluginDir: string;
+      starred: number;
     }>
   ) {
     const setValues: Record<string, unknown> = {};
@@ -82,6 +106,11 @@ export const skillRepo = {
     if (data.type !== undefined) setValues.type = data.type;
     if (data.status !== undefined) setValues.status = data.status;
     if (data.tags !== undefined) setValues.tags = JSON.stringify(data.tags);
+    if (data.instructions !== undefined) setValues.instructions = data.instructions;
+    if (data.manifestUrl !== undefined) setValues.manifestUrl = data.manifestUrl;
+    if (data.sourceKind !== undefined) setValues.sourceKind = data.sourceKind;
+    if (data.pluginDir !== undefined) setValues.pluginDir = data.pluginDir;
+    if (data.starred !== undefined) setValues.starred = data.starred;
 
     db.update(schema.skills)
       .set(setValues)
